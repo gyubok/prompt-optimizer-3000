@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
-import type { Enums } from "@/integrations/supabase/types";
+
+const ACTIVE_STATUSES = new Set(["running", "processing", "scoring"]);
 
 const statusConfig: Record<string, { label: string; className: string }> = {
   queued: { label: "Queued", className: "bg-muted text-muted-foreground" },
@@ -16,8 +17,15 @@ const statusConfig: Record<string, { label: string; className: string }> = {
 
 export function StatusBadge({ status }: { status: string }) {
   const config = statusConfig[status] || { label: status, className: "bg-muted text-muted-foreground" };
+  const isActive = ACTIVE_STATUSES.has(status);
   return (
-    <Badge variant="secondary" className={config.className}>
+    <Badge variant="secondary" className={`${config.className} gap-1.5`}>
+      {isActive && (
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-current" />
+        </span>
+      )}
       {config.label}
     </Badge>
   );
