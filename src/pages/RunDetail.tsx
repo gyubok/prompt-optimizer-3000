@@ -246,7 +246,19 @@ export default function RunDetail() {
                 ))}
                 {(!iterations || iterations.length === 0) && (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground">No iterations yet</TableCell>
+                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                      {isRunning ? (
+                        <div className="flex flex-col items-center gap-2">
+                          <span className="relative flex h-3 w-3">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                            <span className="relative inline-flex h-3 w-3 rounded-full bg-primary" />
+                          </span>
+                          <span>Preparing first iteration…</span>
+                        </div>
+                      ) : (
+                        "No iterations yet"
+                      )}
+                    </TableCell>
                   </TableRow>
                 )}
               </TableBody>
