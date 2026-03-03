@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
+import { RunProgressSection } from "@/components/RunProgressSection";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
 import { Square, Check, X, Edit } from "lucide-react";
@@ -173,6 +174,9 @@ export default function RunDetail() {
           </CardContent>
         </Card>
       )}
+
+      {/* Progress section */}
+      <RunProgressSection run={run} iterations={iterations} />
 
       {/* Stats cards */}
       <div className="grid gap-4 sm:grid-cols-4">
