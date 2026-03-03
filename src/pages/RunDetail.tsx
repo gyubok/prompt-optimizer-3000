@@ -74,9 +74,9 @@ export default function RunDetail() {
   }, [id, refetchRun, refetchIterations]);
 
   const handleStop = async () => {
-    const { error } = await supabase.from("runs").update({ status: "stopping" }).eq("id", id!);
+    const { error } = await supabase.from("runs").update({ status: "stopped" }).eq("id", id!);
     if (error) toast.error(error.message);
-    else toast.success("Stop signal sent");
+    else toast.success("Run stopped");
   };
 
   const handleApprove = async () => {
@@ -135,7 +135,7 @@ export default function RunDetail() {
           </p>
         </div>
         <div className="flex gap-2">
-          {(isRunning || run.status === "stopping") && (
+          {isRunning && (
             <Button variant="destructive" size="sm" onClick={handleStop}>
               <Square className="mr-1 h-3 w-3" /> Stop
             </Button>
