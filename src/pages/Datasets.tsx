@@ -10,10 +10,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Plus, Upload, Database, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 
 type GroundTruthRow = { file_name: string; page_number: number; asset_type: string; count: number };
 
 export default function Datasets() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -214,13 +216,13 @@ export default function Datasets() {
       ) : (
         <div className="grid gap-4">
           {datasets?.map((ds) => (
-            <Card key={ds.id}>
+            <Card key={ds.id} className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => navigate(`/datasets/${ds.id}`)}>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <div>
                   <CardTitle className="text-base">{ds.name}</CardTitle>
                   {ds.description && <p className="text-sm text-muted-foreground">{ds.description}</p>}
                 </div>
-                <Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate(ds.id)}>
+                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(ds.id); }}>
                   <Trash2 className="h-4 w-4 text-destructive" />
                 </Button>
               </CardHeader>

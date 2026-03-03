@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { AppLayout } from "@/components/AppLayout";
 import Datasets from "./pages/Datasets";
+import DatasetDetail from "./pages/DatasetDetail";
 import Runs from "./pages/Runs";
 import NewRun from "./pages/NewRun";
 import RunDetail from "./pages/RunDetail";
@@ -24,6 +25,7 @@ const App = () => (
             <Route path="/" element={<Navigate to="/datasets" replace />} />
             <Route element={<AppLayout />}>
               <Route path="/datasets" element={<Datasets />} />
+              <Route path="/datasets/:id" element={<DatasetDetail />} />
               <Route path="/runs" element={<Runs />} />
               <Route path="/runs/new" element={<NewRun />} />
               <Route path="/runs/:id" element={<RunDetail />} />
