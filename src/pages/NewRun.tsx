@@ -68,7 +68,11 @@ export default function NewRun() {
       return data;
     },
     onSuccess: (data) => {
-      toast.success("Run created");
+      toast.success("Run created – processing started");
+      // Fire-and-forget: invoke edge function to start processing
+      supabase.functions.invoke("start-run", { body: { run_id: data.id } }).catch((err) =>
+        console.error("Failed to invoke start-run:", err)
+      );
       navigate(`/runs/${data.id}`);
     },
     onError: (err: any) => toast.error(err.message),
