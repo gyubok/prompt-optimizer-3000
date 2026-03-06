@@ -342,6 +342,70 @@ serve(async (req) => {
           }).length / allResults.length
         : 0;
 
+    // === AI Prompt Refinement ===
+    let reasoningJson: any = null;
+    try {
+      // Build error summary for the AI
+      const errors = allResults
+        .filter((r) => {
+          if (!r.pass1_relevant) return r.truth_count !== 0;
+          return r.predicted_count !== r.truth_count;
+        })
+        .map((r) => ({
+          file: r.file_name,
+          page: r.page_number,
+          predicted: r.predicted_count,
+          actual: r.truth_count,
+          delta: r.predicted_count - r.truth_count,
+          relevant: r.pass1_relevant,
+        }));
+
+      const correctCount = allResults.length - errors.length;
+
+      const refinementPrompt = `You are a prompt engineering expert. Analyze the results of a document asset detection iteration and produce an improved detection prompt.
+
+Current detection prompt:
+---
+${detectionPrompt}
+---
+
+Results summary:
+- Total pages: ${allResults.length}
+- Correct: ${correctCount}/${allResults.length} (${Math.round((correctCount / allResults.length) * 100)}%)
+- After-gate accuracy: ${Math.round(afterGateScore * 100)}%
+- E2E accuracy: ${Math.round(e2eScore * 100)}%
+
+Errors (${errors.length} pages with wrong counts):
+${errors.length > 0 ? JSON.stringify(errors.slice(0, 20), null, 2) : "None"}
+
+The asset type being detected is: "${run.asset_type}"
+
+Analyze what went wrong and produce a revised prompt that should improve accuracy. Respond with JSON only:
+{
+  "revised_prompt": "the full improved detection prompt",
+  "changes_made": "brief summary of what you changed and why",
+  "analysis": "analysis of error patterns (false positives vs false negatives, common issues)",
+  "strategy_adjustment": "what strategy changes you're making"
+}`;
+
+      const refinementResponse = await callAI(lovableApiKey, "google/gemini-2.5-flash", [
+        { role: "user", content: refinementPrompt },
+      ]);
+
+      const parsed = parseJsonFromText(refinementResponse);
+      if (parsed && parsed.revised_prompt) {
+        reasoningJson = {
+          suggested_prompt: parsed.revised_prompt,
+          changes_made: parsed.changes_made || null,
+          analysis: parsed.analysis || null,
+          strategy_adjustment: parsed.strategy_adjustment || null,
+        };
+      }
+    } catch (e) {
+      console.error("Prompt refinement error:", e);
+      // Non-fatal — continue without refinement
+    }
+
     // Update iteration as completed
     await supabase
       .from("iterations")
@@ -349,6 +413,7 @@ serve(async (req) => {
         status: "completed",
         after_gate_score: afterGateScore,
         e2e_score: e2eScore,
+        reasoning_json: reasoningJson,
       })
       .eq("id", currentIterationId);
 
