@@ -213,7 +213,7 @@ serve(async (req) => {
             const pass2Response = await callAI(lovableApiKey, "google/gemini-2.5-pro", [
               {
                 role: "system",
-                content: `You are a document asset detection assistant. Use the following detection prompt to analyze the PDF page and return detections as JSON.\n\nDetection prompt:\n${run.initial_prompt}\n\nRespond ONLY with a JSON object: { "detections": [ { "description": "...", "location": "..." } ], "count": <number> }`,
+                content: `You are a document asset detection assistant. Use the following detection prompt to analyze the PDF page and return detections as JSON.\n\nDetection prompt:\n${detectionPrompt}\n\nRespond ONLY with a JSON object: { "detections": [ { "description": "...", "location": "..." } ], "count": <number> }`,
               },
               {
                 role: "user",
