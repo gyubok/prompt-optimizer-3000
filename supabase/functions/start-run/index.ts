@@ -256,7 +256,7 @@ serve(async (req) => {
       const delta = predictedCount - truthCount;
 
       // Upsert result
-      await supabase.from("iteration_results").upsert(
+      const { error: upsertErr } = await supabase.from("iteration_results").upsert(
         {
           iteration_id: currentIterationId,
           file_name: file.file_name,
@@ -274,6 +274,9 @@ serve(async (req) => {
         },
         { onConflict: "iteration_id,file_name,page_number", ignoreDuplicates: false }
       );
+      if (upsertErr) {
+        console.error(`Upsert error for ${file.file_name} p${file.page_number}:`, upsertErr);
+      }
 
       // Update batch cursor
       await supabase
