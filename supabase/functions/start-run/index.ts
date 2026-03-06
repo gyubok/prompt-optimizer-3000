@@ -113,6 +113,14 @@ serve(async (req) => {
       currentOffset = 0;
     }
 
+    // Fetch the current iteration's prompt for detection
+    const { data: currentIter } = await supabase
+      .from("iterations")
+      .select("prompt_text")
+      .eq("id", currentIterationId)
+      .single();
+    const detectionPrompt = currentIter?.prompt_text || run.initial_prompt;
+
     // Process batch
     const batch = files.slice(currentOffset, currentOffset + BATCH_SIZE);
 
