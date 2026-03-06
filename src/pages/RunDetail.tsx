@@ -1,5 +1,5 @@
-import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useParams, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,11 +10,14 @@ import { IterationCard } from "@/components/IterationCard";
 import { ReviewPanel } from "@/components/ReviewPanel";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid } from "recharts";
-import { Square } from "lucide-react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { ArrowLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const { data: run, refetch: refetchRun } = useQuery({
     queryKey: ["run", id],
@@ -53,10 +56,16 @@ export default function RunDetail() {
     return () => { supabase.removeChannel(channel); };
   }, [id, refetchRun, refetchIterations]);
 
-  const handleStop = async () => {
-    const { error } = await supabase.from("runs").update({ status: "stopped" }).eq("id", id!);
-    if (error) toast.error(error.message);
-    else toast.success("Run stopped");
+  const handleDelete = async () => {
+    try {
+      const { error } = await supabase.from("runs").delete().eq("id", id!);
+      if (error) throw error;
+      toast.success("Run deleted");
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      navigate("/runs");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete run");
+    }
   };
 
   if (!run) return <p className="text-muted-foreground">Loading...</p>;
@@ -81,6 +90,11 @@ export default function RunDetail() {
 
   return (
     <div className="space-y-6">
+      {/* Back button */}
+      <Button variant="ghost" size="sm" onClick={() => navigate("/runs")} className="text-muted-foreground hover:text-foreground -ml-2">
+        <ArrowLeft className="mr-1 h-4 w-4" /> Back to Runs
+      </Button>
+
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
@@ -92,11 +106,27 @@ export default function RunDetail() {
             {(run as any).datasets?.name} · {run.asset_type} · {run.mode} mode
           </p>
         </div>
-        {isRunning && (
-          <Button variant="destructive" size="sm" onClick={handleStop}>
-            <Square className="mr-1 h-3 w-3" /> Stop
-          </Button>
-        )}
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
+              <Trash2 className="mr-1 h-4 w-4" /> Delete Run
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Run</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete this run and all its iterations and results. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
 
       {/* Compact stats */}
