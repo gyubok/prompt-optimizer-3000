@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS iteration_results_unique_idx ON public.iteration_results (iteration_id, file_name, page_number);
