@@ -1,45 +1,47 @@
 
 
-## Investigation Findings
+## Plan: Add Progress Bar, Stage, Last Activity, and Elapsed Time to Run Detail
 
-### Root Cause: AI Gateway Rate Limiting (429)
-The edge function logs show **every single AI call** is returning `429 Too Many Requests` from the AI gateway. Both Pass 1 (relevance) and Pass 2 (detection) fail for all 11 files. The error handling catches these errors but continues — writing results with `predicted_count: 0` and `pass1_relevant: true` (defaults on error). However, the upserts appear to silently fail too (0 rows in `iteration_results`), likely because the function hits the edge runtime timeout (~60s) while processing 11 files with back-to-back failing API calls, and the `Http: connection closed before message completed` error in logs confirms this.
+### What we're adding
 
-### Cascade of Problems
-1. **AI calls 429** → All AI calls fail due to rate limiting
-2. **No error handling for upsert failures** → Results never saved, but function continues
-3. **Iteration marked "completed" with 0 results** → Scoring runs on empty array, producing `after_gate_score: 0.0` and `e2e_score: 0.0`
-4. **Run transitions to `paused_manual`** → UI shows review panel, but there's nothing to review
-5. **"Best Accuracy: -Infinity%"** → `Math.max(...[])` on an empty filtered array returns `-Infinity`
+A new status/progress section between the header and stats cards on the Run Detail page with:
 
-### The 500 Errors in Browser
-The red 500 errors in the console are from `otel-faro.p.l5e.io/collect` — a telemetry/observability service, not related to the app. These are harmless and can be ignored.
+1. **Progress bar** showing processed files vs total files for the current active iteration
+2. **Current stage** label (e.g., "Processing Pass 1", "Scoring", "Idle")
+3. **Last activity** timestamp (most recent `updated_at` from run or latest iteration)
+4. **Elapsed time** live counter since `run.created_at` (ticks every second while run is active)
 
-### What Needs Fixing
+### Data sources
 
-**1. Edge function: Add retry with backoff for 429 errors**
-- In `callAI()`, retry up to 3 times with exponential backoff (2s, 4s, 8s) when receiving 429
-- This handles transient rate limits gracefully
+- **Total files**: Query `dataset_files` count where `dataset_id = run.dataset_id`
+- **Processed files**: Query `iteration_results` count for the latest active iteration
+- **Current stage**: Derived from the latest iteration's `status` field (`pending` → "Preparing", `processing` → "Processing", `scoring` → "Scoring", else "Idle")
+- **Last activity**: `run.updated_at` or latest iteration's `created_at`, whichever is newer
+- **Elapsed time**: `Date.now() - run.created_at`, updated via `setInterval` every second (only while status is active)
 
-**2. Edge function: Check upsert errors**
-- The upsert result is never checked for errors — add error logging so silent failures are visible
+### Technical changes
 
-**3. Edge function: Don't mark iteration as "completed" with 0 results**
-- After scoring, if `allResults.length === 0`, mark iteration as `failed` with a clear reason, not `completed`
-- Update run status to `failed` or keep it `running` so the user knows something went wrong
+**File: `src/pages/RunDetail.tsx`**
 
-**4. UI: Fix -Infinity% display**
-- In `RunDetail.tsx` line 68: `Math.max(...[])` returns `-Infinity`. Guard against empty arrays:
-  ```
-  const scores = iterations.filter(i => i.after_gate_score != null).map(i => Number(i.after_gate_score));
-  const bestFiltered = scores.length > 0 ? Math.max(...scores) : null;
-  ```
+- Add a new `useQuery` for total file count: `supabase.from("dataset_files").select("id", { count: "exact", head: true }).eq("dataset_id", run.dataset_id)`
+- Add a new `useQuery` for current iteration result count (enabled only when there's an active iteration with `processing`/`scoring` status): count from `iteration_results` for that iteration
+- Add realtime subscription on `iteration_results` table filtered by the active iteration to trigger refetch of the count
+- Add a `useEffect` with `setInterval(1000)` to compute elapsed time from `run.created_at`, clearing when run is no longer active
+- Render a new `Card` section between header and stats cards containing:
+  - Progress bar (using existing `Progress` component) with label like "12 / 48 files"
+  - Stage text derived from latest iteration status
+  - Last activity as relative time (e.g., "3s ago") using `date-fns.formatDistanceToNow`
+  - Elapsed time formatted as `HH:MM:SS`
 
-**5. UI: Show error state when iteration completes with no results**
-- In `IterationCard.tsx`, when `iteration.status === "completed"` but `totalPages === 0`, show a message like "Processing failed — no results were recorded. This may be due to rate limiting."
+### UI layout
 
-### Files to Change
-- `supabase/functions/start-run/index.ts` — retry logic in `callAI()`, upsert error checking, handle 0-result scoring
-- `src/pages/RunDetail.tsx` — fix `-Infinity%` bug
-- `src/components/IterationCard.tsx` — show error state for completed iterations with 0 results
+```text
+┌──────────────────────────────────────────────────┐
+│  Stage: Processing Pass 1    Elapsed: 00:04:32   │
+│  ████████████░░░░░░░░░░░░  12 / 48 files         │
+│  Last activity: 3s ago                           │
+└──────────────────────────────────────────────────┘
+```
+
+The progress section only shows meaningful data when the run is in an active state; otherwise it shows "Idle" with no progress bar.
 

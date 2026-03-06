@@ -256,7 +256,7 @@ serve(async (req) => {
       const delta = predictedCount - truthCount;
 
       // Upsert result
-      await supabase.from("iteration_results").upsert(
+      const { error: upsertErr } = await supabase.from("iteration_results").upsert(
         {
           iteration_id: currentIterationId,
           file_name: file.file_name,
@@ -274,6 +274,9 @@ serve(async (req) => {
         },
         { onConflict: "iteration_id,file_name,page_number", ignoreDuplicates: false }
       );
+      if (upsertErr) {
+        console.error(`Upsert error for ${file.file_name} p${file.page_number}:`, upsertErr);
+      }
 
       // Update batch cursor
       await supabase
@@ -312,6 +315,18 @@ serve(async (req) => {
       .eq("iteration_id", currentIterationId);
 
     const allResults = results || [];
+
+    // If no results were recorded, mark as failed
+    if (allResults.length === 0) {
+      console.error("No results recorded for iteration — likely all AI calls failed");
+      await supabase
+        .from("iterations")
+        .update({ status: "failed" })
+        .eq("id", currentIterationId);
+      await supabase.from("runs").update({ status: "failed" }).eq("id", run_id);
+      return jsonResp({ status: "failed", reason: "No results recorded — AI calls may have been rate limited" });
+    }
+
     const relevantResults = allResults.filter((r) => r.pass1_relevant);
 
     const afterGateScore =
@@ -343,8 +358,6 @@ serve(async (req) => {
     } else if (e2eScore >= 1.0 || run.current_iteration >= run.max_iterations) {
       await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
     } else {
-      // Auto mode: check stall and potentially create next iteration
-      // For now, mark completed (prompt refinement logic can be added later)
       await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
     }
 
@@ -370,23 +383,33 @@ function jsonResp(data: any, status = 200) {
   });
 }
 
-async function callAI(apiKey: string, model: string, messages: any[]): Promise<string> {
-  const resp = await fetch(AI_GATEWAY, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model, messages }),
-  });
+async function callAI(apiKey: string, model: string, messages: any[], maxRetries = 3): Promise<string> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(AI_GATEWAY, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model, messages }),
+    });
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`AI gateway ${resp.status}: ${errText}`);
+    if (resp.status === 429 && attempt < maxRetries) {
+      const backoffMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
+      console.log(`Rate limited (429), retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      continue;
+    }
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`AI gateway ${resp.status}: ${errText}`);
+    }
+
+    const data = await resp.json();
+    return data.choices?.[0]?.message?.content ?? "";
   }
-
-  const data = await resp.json();
-  return data.choices?.[0]?.message?.content ?? "";
+  throw new Error("Max retries exceeded for AI gateway");
 }
 
 function parseJsonFromText(text: string): any | null {
