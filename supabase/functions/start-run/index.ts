@@ -133,9 +133,8 @@ serve(async (req) => {
         const arrayBuffer = await fileData.arrayBuffer();
         const uint8 = new Uint8Array(arrayBuffer);
         let binary = "";
-        const chunkSize = 8192;
-        for (let i = 0; i < uint8.length; i += chunkSize) {
-          binary += String.fromCharCode(...uint8.subarray(i, i + chunkSize));
+        for (let i = 0; i < uint8.length; i++) {
+          binary += String.fromCharCode(uint8[i]);
         }
         const base64 = btoa(binary);
         const mimeType = "application/pdf";
