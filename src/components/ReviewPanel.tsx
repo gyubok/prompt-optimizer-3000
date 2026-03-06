@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Play, Square, Edit, Loader2, Sparkles, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import type { Tables } from "@/integrations/supabase/types";
@@ -19,8 +20,8 @@ export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
   const reasoning = latestIteration?.reasoning_json as any;
   const suggestedPrompt = reasoning?.suggested_prompt;
   const lastPrompt = latestIteration?.prompt_text ?? run.initial_prompt;
+  const originalPrompt = run.initial_prompt;
   
-  // Default to AI-suggested prompt if available, otherwise previous prompt
   const defaultPrompt = suggestedPrompt || lastPrompt;
   const [promptText, setPromptText] = useState(defaultPrompt);
   const [isEditing, setIsEditing] = useState(false);
@@ -50,10 +51,6 @@ export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
     const { error } = await supabase.from("runs").update({ status: "stopped" }).eq("id", run.id);
     if (error) toast.error(error.message);
     else toast.success("Run stopped");
-  };
-
-  const handleRevertPrompt = () => {
-    setPromptText(lastPrompt);
   };
 
   return (
@@ -106,9 +103,19 @@ export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
               )}
             </p>
             <div className="flex gap-1">
-              {suggestedPrompt && promptText !== lastPrompt && (
-                <Button variant="ghost" size="sm" onClick={handleRevertPrompt} className="h-7 text-xs">
-                  <RotateCcw className="mr-1 h-3 w-3" /> Use Previous
+              {promptText !== originalPrompt && (
+                <Button variant="ghost" size="sm" onClick={() => setPromptText(originalPrompt)} className="h-7 text-xs">
+                  <RotateCcw className="mr-1 h-3 w-3" /> Original Prompt
+                </Button>
+              )}
+              {suggestedPrompt && promptText !== suggestedPrompt && (
+                <Button variant="ghost" size="sm" onClick={() => setPromptText(suggestedPrompt)} className="h-7 text-xs">
+                  <Sparkles className="mr-1 h-3 w-3" /> AI Suggested
+                </Button>
+              )}
+              {promptText !== lastPrompt && promptText !== originalPrompt && (
+                <Button variant="ghost" size="sm" onClick={() => setPromptText(lastPrompt)} className="h-7 text-xs">
+                  <RotateCcw className="mr-1 h-3 w-3" /> Previous
                 </Button>
               )}
               {!isEditing && (
@@ -131,7 +138,7 @@ export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
           )}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex items-center justify-between">
           <Button onClick={handleStartNext} disabled={isStarting || !promptText.trim()}>
             {isStarting ? (
               <Loader2 className="mr-1 h-3 w-3 animate-spin" />
@@ -140,9 +147,28 @@ export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
             )}
             Start Next Iteration
           </Button>
-          <Button variant="destructive" size="default" onClick={handleStop}>
-            <Square className="mr-1 h-3 w-3" /> Stop Run
-          </Button>
+
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
+                <Square className="mr-1 h-3 w-3" /> Stop Run
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Stop this run?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will permanently stop the run. No further iterations can be started after stopping. All existing results will be preserved.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleStop} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                  Stop Run
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </CardContent>
     </Card>
