@@ -1,24 +1,20 @@
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { useEffect, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useEffect } from "react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/StatusBadge";
 import { RunProgressSection } from "@/components/RunProgressSection";
+import { IterationCard } from "@/components/IterationCard";
+import { ReviewPanel } from "@/components/ReviewPanel";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
-import { Square, Check, X, Edit } from "lucide-react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid } from "recharts";
+import { Square } from "lucide-react";
 import { toast } from "sonner";
-import type { Tables } from "@/integrations/supabase/types";
 
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
-  const [editPrompt, setEditPrompt] = useState("");
-  const [editing, setEditing] = useState(false);
 
   const { data: run, refetch: refetchRun } = useQuery({
     queryKey: ["run", id],
@@ -46,22 +42,6 @@ export default function RunDetail() {
     },
   });
 
-  const [selectedIteration, setSelectedIteration] = useState<string | null>(null);
-
-  const { data: results } = useQuery({
-    queryKey: ["iteration-results", selectedIteration],
-    enabled: !!selectedIteration,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("iteration_results")
-        .select("*")
-        .eq("iteration_id", selectedIteration!)
-        .order("file_name");
-      if (error) throw error;
-      return data;
-    },
-  });
-
   // Realtime subscriptions
   useEffect(() => {
     if (!id) return;
@@ -79,47 +59,26 @@ export default function RunDetail() {
     else toast.success("Run stopped");
   };
 
-  const handleApprove = async () => {
-    const { error } = await supabase.from("runs").update({ status: "running" }).eq("id", id!);
-    if (error) toast.error(error.message);
-    else toast.success("Run approved to continue");
-  };
-
-  const handleReject = async () => {
-    const { error } = await supabase.from("runs").update({ status: "stopped" }).eq("id", id!);
-    if (error) toast.error(error.message);
-    else toast.success("Run rejected");
-  };
-
-  const handleEditPrompt = async () => {
-    if (!selectedIteration || !editPrompt) return;
-    const { error } = await supabase
-      .from("iterations")
-      .update({ prompt_text: editPrompt, status: "pending" })
-      .eq("id", selectedIteration);
-    if (error) toast.error(error.message);
-    else {
-      await supabase.from("runs").update({ status: "running" }).eq("id", id!);
-      toast.success("Prompt updated, resuming run");
-      setEditing(false);
-    }
-  };
-
-  const chartData = iterations?.map((iter) => ({
-    iteration: iter.iteration_number,
-    afterGate: iter.after_gate_score ? Number(iter.after_gate_score) : null,
-    e2e: iter.e2e_score ? Number(iter.e2e_score) : null,
-  })) ?? [];
-
-  const chartConfig = {
-    afterGate: { label: "After-Gate Score", color: "hsl(var(--primary))" },
-    e2e: { label: "E2E Score", color: "hsl(var(--muted-foreground))" },
-  };
-
   if (!run) return <p className="text-muted-foreground">Loading...</p>;
 
   const isPaused = run.status === "paused_manual";
   const isRunning = run.status === "running";
+  const latestIteration = iterations?.at(-1);
+  const bestFiltered = iterations?.length
+    ? Math.max(...iterations.filter((i) => i.after_gate_score != null).map((i) => Number(i.after_gate_score)))
+    : null;
+
+  // Chart data
+  const chartData = iterations?.filter(i => i.after_gate_score != null || i.e2e_score != null).map((iter) => ({
+    iteration: iter.iteration_number,
+    filtered: iter.after_gate_score ? Math.round(Number(iter.after_gate_score) * 100) : null,
+    overall: iter.e2e_score ? Math.round(Number(iter.e2e_score) * 100) : null,
+  })) ?? [];
+
+  const chartConfig = {
+    filtered: { label: "Accuracy (Filtered)", color: "hsl(var(--primary))" },
+    overall: { label: "Accuracy (Overall)", color: "hsl(var(--muted-foreground))" },
+  };
 
   return (
     <div className="space-y-6">
@@ -134,237 +93,90 @@ export default function RunDetail() {
             {(run as any).datasets?.name} · {run.asset_type} · {run.mode} mode
           </p>
         </div>
-        <div className="flex gap-2">
-          {isRunning && (
-            <Button variant="destructive" size="sm" onClick={handleStop}>
-              <Square className="mr-1 h-3 w-3" /> Stop
-            </Button>
-          )}
-          {isPaused && (
-            <>
-              <Button size="sm" onClick={handleApprove}>
-                <Check className="mr-1 h-3 w-3" /> Approve
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => setEditing(!editing)}>
-                <Edit className="mr-1 h-3 w-3" /> Edit Prompt
-              </Button>
-              <Button variant="destructive" size="sm" onClick={handleReject}>
-                <X className="mr-1 h-3 w-3" /> Reject
-              </Button>
-            </>
-          )}
-        </div>
+        {isRunning && (
+          <Button variant="destructive" size="sm" onClick={handleStop}>
+            <Square className="mr-1 h-3 w-3" /> Stop
+          </Button>
+        )}
       </div>
 
-      {/* Edit prompt panel */}
-      {editing && isPaused && (
+      {/* Compact stats */}
+      <div className="flex flex-wrap items-center gap-4 text-sm">
+        <span>
+          <span className="text-muted-foreground">Iteration:</span>{" "}
+          <span className="font-semibold">{run.current_iteration}</span>
+          <span className="text-muted-foreground"> / {run.max_iterations} max</span>
+        </span>
+        {bestFiltered != null && !isNaN(bestFiltered) && (
+          <span>
+            <span className="text-muted-foreground">Best Accuracy:</span>{" "}
+            <span className="font-semibold">{Math.round(bestFiltered * 100)}%</span>
+          </span>
+        )}
+        <span>
+          <span className="text-muted-foreground">Relevance Threshold:</span>{" "}
+          <span className="font-semibold">{run.pass1_threshold}</span>
+        </span>
+      </div>
+
+      {/* Progress section (while processing) */}
+      {(isRunning || run.status === "queued") && (
+        <RunProgressSection run={run} iterations={iterations} />
+      )}
+
+      {/* Review panel (when paused) */}
+      {isPaused && (
+        <ReviewPanel run={run} latestIteration={latestIteration} />
+      )}
+
+      {/* Accuracy trend chart */}
+      {chartData.length >= 2 && (
         <Card>
-          <CardHeader><CardTitle className="text-base">Edit Prompt</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            <Textarea
-              value={editPrompt}
-              onChange={(e) => setEditPrompt(e.target.value)}
-              className="min-h-[200px] font-mono text-sm"
-              placeholder="Enter revised prompt..."
-            />
-            <div className="flex gap-2">
-              <Button onClick={handleEditPrompt}>Save & Continue</Button>
-              <Button variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
-            </div>
+          <CardContent className="pt-4">
+            <p className="text-sm font-medium mb-3">Accuracy Trend</p>
+            <ChartContainer config={chartConfig} className="h-[200px]">
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="iteration" label={{ value: "Iteration", position: "insideBottom", offset: -5 }} />
+                <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Line type="monotone" dataKey="filtered" stroke="var(--color-filtered)" strokeWidth={2} dot />
+                <Line type="monotone" dataKey="overall" stroke="var(--color-overall)" strokeWidth={2} dot strokeDasharray="5 5" />
+              </LineChart>
+            </ChartContainer>
           </CardContent>
         </Card>
       )}
 
-      {/* Progress section */}
-      <RunProgressSection run={run} iterations={iterations} />
-
-      {/* Stats cards */}
-      <div className="grid gap-4 sm:grid-cols-4">
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">Current Iteration</p>
-            <p className="text-2xl font-bold">{run.current_iteration}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">Best After-Gate</p>
-            <p className="text-2xl font-bold">
-              {iterations?.length
-                ? Math.max(...iterations.filter((i) => i.after_gate_score != null).map((i) => Number(i.after_gate_score))).toFixed(2) || "—"
-                : "—"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">Pass 1 Threshold</p>
-            <p className="text-2xl font-bold">{run.pass1_threshold}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">Cumulative Cost</p>
-            <p className="text-2xl font-bold">
-              ${iterations?.length
-                ? iterations[iterations.length - 1].cumulative_cost?.toFixed(4) ?? "—"
-                : "—"}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Tabs defaultValue="iterations">
-        <TabsList>
-          <TabsTrigger value="iterations">Iterations</TabsTrigger>
-          <TabsTrigger value="chart">Accuracy Trend</TabsTrigger>
-          <TabsTrigger value="results">Per-Page Results</TabsTrigger>
-          <TabsTrigger value="reasoning">Reasoning</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="iterations" className="mt-4">
-          <div className="rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>#</TableHead>
-                  <TableHead>After-Gate</TableHead>
-                  <TableHead>E2E</TableHead>
-                  <TableHead>Cost</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {iterations?.map((iter) => (
-                  <TableRow
-                    key={iter.id}
-                    className={`cursor-pointer ${selectedIteration === iter.id ? "bg-accent" : ""}`}
-                    onClick={() => setSelectedIteration(iter.id)}
-                  >
-                    <TableCell>{iter.iteration_number}</TableCell>
-                    <TableCell>{iter.after_gate_score != null ? Number(iter.after_gate_score).toFixed(4) : "—"}</TableCell>
-                    <TableCell>{iter.e2e_score != null ? Number(iter.e2e_score).toFixed(4) : "—"}</TableCell>
-                    <TableCell>${iter.estimated_cost?.toFixed(4) ?? "—"}</TableCell>
-                    <TableCell><StatusBadge status={iter.status} /></TableCell>
-                  </TableRow>
-                ))}
-                {(!iterations || iterations.length === 0) && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                      {isRunning ? (
-                        <div className="flex flex-col items-center gap-2">
-                          <span className="relative flex h-3 w-3">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
-                            <span className="relative inline-flex h-3 w-3 rounded-full bg-primary" />
-                          </span>
-                          <span>Preparing first iteration…</span>
-                        </div>
-                      ) : (
-                        "No iterations yet"
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="chart" className="mt-4">
+      {/* Iteration timeline (latest first) */}
+      <div className="space-y-4">
+        <h2 className="text-lg font-semibold">Iterations</h2>
+        {iterations && iterations.length > 0 ? (
+          [...iterations].reverse().map((iter, idx) => (
+            <IterationCard
+              key={iter.id}
+              iteration={iter}
+              isLatest={idx === 0}
+            />
+          ))
+        ) : (
           <Card>
-            <CardContent className="pt-4">
-              {chartData.length > 0 ? (
-                <ChartContainer config={chartConfig} className="h-[300px]">
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="iteration" />
-                    <YAxis domain={[0, 1]} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Line type="monotone" dataKey="afterGate" stroke="var(--color-afterGate)" strokeWidth={2} dot />
-                    <Line type="monotone" dataKey="e2e" stroke="var(--color-e2e)" strokeWidth={2} dot strokeDasharray="5 5" />
-                  </LineChart>
-                </ChartContainer>
+            <CardContent className="py-8 text-center text-muted-foreground">
+              {isRunning ? (
+                <div className="flex flex-col items-center gap-2">
+                  <span className="relative flex h-3 w-3">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                    <span className="relative inline-flex h-3 w-3 rounded-full bg-primary" />
+                  </span>
+                  <span>Preparing first iteration…</span>
+                </div>
               ) : (
-                <p className="py-12 text-center text-muted-foreground">No data yet</p>
+                "No iterations yet"
               )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        <TabsContent value="results" className="mt-4">
-          {selectedIteration ? (
-            <div className="rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>File</TableHead>
-                    <TableHead>Page</TableHead>
-                    <TableHead>Pass 1</TableHead>
-                    <TableHead>Confidence</TableHead>
-                    <TableHead>Predicted</TableHead>
-                    <TableHead>Truth</TableHead>
-                    <TableHead>Delta</TableHead>
-                    <TableHead>Valid JSON</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {results?.map((r) => (
-                    <TableRow key={r.id} className={r.delta !== 0 ? "bg-destructive/5" : ""}>
-                      <TableCell className="text-xs font-mono">{r.file_name}</TableCell>
-                      <TableCell>{r.page_number}</TableCell>
-                      <TableCell>{r.pass1_relevant ? "✓" : "✗"}</TableCell>
-                      <TableCell>{r.pass1_confidence?.toFixed(2) ?? "—"}</TableCell>
-                      <TableCell>{r.predicted_count}</TableCell>
-                      <TableCell>{r.truth_count}</TableCell>
-                      <TableCell className={r.delta !== 0 ? "text-destructive font-semibold" : ""}>{r.delta}</TableCell>
-                      <TableCell>{r.pass2_valid_json === false ? "✗" : r.pass2_valid_json === true ? "✓" : "—"}</TableCell>
-                    </TableRow>
-                  ))}
-                  {(!results || results.length === 0) && (
-                    <TableRow>
-                      <TableCell colSpan={8} className="text-center text-muted-foreground">Select an iteration to view results</TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          ) : (
-            <p className="text-muted-foreground">Select an iteration from the Iterations tab first</p>
-          )}
-        </TabsContent>
-
-        <TabsContent value="reasoning" className="mt-4">
-          {selectedIteration && iterations ? (
-            (() => {
-              const iter = iterations.find((i) => i.id === selectedIteration);
-              const reasoning = iter?.reasoning_json as any;
-              if (!reasoning) return <p className="text-muted-foreground">No reasoning data for this iteration</p>;
-              return (
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Card>
-                    <CardHeader><CardTitle className="text-sm">Changes Made</CardTitle></CardHeader>
-                    <CardContent><p className="text-sm">{reasoning.changes_made || "—"}</p></CardContent>
-                  </Card>
-                  <Card>
-                    <CardHeader><CardTitle className="text-sm">Analysis</CardTitle></CardHeader>
-                    <CardContent><p className="text-sm">{reasoning.analysis || "—"}</p></CardContent>
-                  </Card>
-                  <Card>
-                    <CardHeader><CardTitle className="text-sm">Strategy Adjustment</CardTitle></CardHeader>
-                    <CardContent><p className="text-sm">{reasoning.strategy_adjustment || "—"}</p></CardContent>
-                  </Card>
-                  <Card>
-                    <CardHeader><CardTitle className="text-sm">Risk Note</CardTitle></CardHeader>
-                    <CardContent><p className="text-sm">{reasoning.risk_note || "—"}</p></CardContent>
-                  </Card>
-                </div>
-              );
-            })()
-          ) : (
-            <p className="text-muted-foreground">Select an iteration to view reasoning</p>
-          )}
-        </TabsContent>
-      </Tabs>
+        )}
+      </div>
     </div>
   );
 }
