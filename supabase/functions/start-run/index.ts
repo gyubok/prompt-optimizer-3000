@@ -19,7 +19,7 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
   try {
-    const { run_id, continue_processing, iteration_id, offset } = await req.json();
+    const { run_id, continue_processing, iteration_id, offset, start_next, prompt_text } = await req.json();
     if (!run_id) throw new Error("run_id is required");
 
     // Fetch run
@@ -30,8 +30,8 @@ serve(async (req) => {
       .single();
     if (runErr) throw runErr;
 
-    // Check if run was stopped/failed
-    if (["stopped", "failed", "completed"].includes(run.status)) {
+    // Check if run was stopped/failed (unless starting next)
+    if (!start_next && ["stopped", "failed", "completed"].includes(run.status)) {
       return jsonResp({ status: "skipped", reason: `Run is ${run.status}` });
     }
 
@@ -61,8 +61,34 @@ serve(async (req) => {
     let currentIterationId = iteration_id;
     let currentOffset = offset || 0;
 
-    // If not continuing, create iteration #1
-    if (!continue_processing) {
+    // start_next mode: create next iteration with provided prompt
+    if (start_next) {
+      const iterNum = run.current_iteration + 1;
+      if (iterNum > run.max_iterations) {
+        await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
+        return jsonResp({ status: "completed", reason: "Max iterations reached" });
+      }
+      const { data: iteration, error: iterErr } = await supabase
+        .from("iterations")
+        .insert({
+          run_id,
+          iteration_number: iterNum,
+          prompt_text: prompt_text || run.initial_prompt,
+          status: "processing",
+          batch_cursor: 0,
+        })
+        .select()
+        .single();
+      if (iterErr) throw iterErr;
+      currentIterationId = iteration.id;
+
+      await supabase
+        .from("runs")
+        .update({ status: "running", current_iteration: iterNum })
+        .eq("id", run_id);
+
+      currentOffset = 0;
+    } else if (!continue_processing) {
       const iterNum = run.current_iteration + 1;
       const { data: iteration, error: iterErr } = await supabase
         .from("iterations")
