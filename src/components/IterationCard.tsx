@@ -11,7 +11,8 @@ import type { Tables } from "@/integrations/supabase/types";
 type Iteration = Tables<"iterations">;
 
 export function IterationCard({ iteration, isLatest }: { iteration: Iteration; isLatest: boolean }) {
-  const [resultsOpen, setResultsOpen] = useState(false);
+  const shouldAutoExpand = isLatest && iteration.status === "completed";
+  const [resultsOpen, setResultsOpen] = useState(shouldAutoExpand);
   const [reasoningOpen, setReasoningOpen] = useState(false);
 
   const { data: results } = useQuery({

@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Play, Square, Edit, Loader2 } from "lucide-react";
+import { Play, Square, Edit, Loader2, Sparkles, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -16,8 +16,13 @@ interface ReviewPanelProps {
 }
 
 export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
+  const reasoning = latestIteration?.reasoning_json as any;
+  const suggestedPrompt = reasoning?.suggested_prompt;
   const lastPrompt = latestIteration?.prompt_text ?? run.initial_prompt;
-  const [promptText, setPromptText] = useState(lastPrompt);
+  
+  // Default to AI-suggested prompt if available, otherwise previous prompt
+  const defaultPrompt = suggestedPrompt || lastPrompt;
+  const [promptText, setPromptText] = useState(defaultPrompt);
   const [isEditing, setIsEditing] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
@@ -47,6 +52,10 @@ export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
     else toast.success("Run stopped");
   };
 
+  const handleRevertPrompt = () => {
+    setPromptText(lastPrompt);
+  };
+
   return (
     <Card className="border-primary/30 bg-primary/5">
       <CardHeader className="pb-3">
@@ -56,16 +65,58 @@ export function ReviewPanel({ run, latestIteration }: ReviewPanelProps) {
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* AI Analysis Section */}
+        {reasoning && (reasoning.analysis || reasoning.changes_made) && (
+          <div className="bg-accent/50 border border-accent rounded-md p-3 space-y-2">
+            <div className="flex items-center gap-1.5 text-sm font-medium">
+              <Sparkles className="h-4 w-4 text-primary" />
+              AI Analysis & Suggestions
+            </div>
+            {reasoning.analysis && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Error Analysis</p>
+                <p className="text-sm">{reasoning.analysis}</p>
+              </div>
+            )}
+            {reasoning.changes_made && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Prompt Changes</p>
+                <p className="text-sm">{reasoning.changes_made}</p>
+              </div>
+            )}
+            {reasoning.strategy_adjustment && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Strategy</p>
+                <p className="text-sm">{reasoning.strategy_adjustment}</p>
+              </div>
+            )}
+          </div>
+        )}
+
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <p className="text-xs font-medium text-muted-foreground">
-              Prompt for Iteration {(latestIteration?.iteration_number ?? 0) + 1}
+              {suggestedPrompt ? (
+                <span className="flex items-center gap-1">
+                  <Sparkles className="h-3 w-3" />
+                  AI-Suggested Prompt for Iteration {(latestIteration?.iteration_number ?? 0) + 1}
+                </span>
+              ) : (
+                `Prompt for Iteration ${(latestIteration?.iteration_number ?? 0) + 1}`
+              )}
             </p>
-            {!isEditing && (
-              <Button variant="ghost" size="sm" onClick={() => setIsEditing(true)} className="h-7 text-xs">
-                <Edit className="mr-1 h-3 w-3" /> Edit
-              </Button>
-            )}
+            <div className="flex gap-1">
+              {suggestedPrompt && promptText !== lastPrompt && (
+                <Button variant="ghost" size="sm" onClick={handleRevertPrompt} className="h-7 text-xs">
+                  <RotateCcw className="mr-1 h-3 w-3" /> Use Previous
+                </Button>
+              )}
+              {!isEditing && (
+                <Button variant="ghost" size="sm" onClick={() => setIsEditing(true)} className="h-7 text-xs">
+                  <Edit className="mr-1 h-3 w-3" /> Edit
+                </Button>
+              )}
+            </div>
           </div>
           {isEditing ? (
             <Textarea

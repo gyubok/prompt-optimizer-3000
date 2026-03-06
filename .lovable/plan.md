@@ -1,45 +1,47 @@
 
 
-## Findings
+## Plan: Add Progress Bar, Stage, Last Activity, and Elapsed Time to Run Detail
 
-**Issue 1: No results to access.** Iteration 1 has status "completed" but 0 results in the database — every AI call was rate-limited (429), so nothing was saved. The UI correctly shows "Processing failed" for 0-result iterations, but the root issue is that iteration 1 never actually produced data.
+### What we're adding
 
-**Issue 2: Prompt for iteration 2 is "test".** The ReviewPanel simply pre-fills with the previous iteration's prompt and lets the user type freely. There is no AI-driven prompt refinement step. The user typed "test" and clicked "Start Next Iteration" — the system accepted it as-is. There is no logic anywhere that analyzes results and suggests an improved prompt.
+A new status/progress section between the header and stats cards on the Run Detail page with:
 
-## Plan
+1. **Progress bar** showing processed files vs total files for the current active iteration
+2. **Current stage** label (e.g., "Processing Pass 1", "Scoring", "Idle")
+3. **Last activity** timestamp (most recent `updated_at` from run or latest iteration)
+4. **Elapsed time** live counter since `run.created_at` (ticks every second while run is active)
 
-### 1. Add AI prompt refinement to the edge function
+### Data sources
 
-After scoring an iteration (when results exist), call the AI to analyze the results and generate a refined prompt for the next iteration. Store both the suggested prompt and the analysis reasoning.
+- **Total files**: Query `dataset_files` count where `dataset_id = run.dataset_id`
+- **Processed files**: Query `iteration_results` count for the latest active iteration
+- **Current stage**: Derived from the latest iteration's `status` field (`pending` → "Preparing", `processing` → "Processing", `scoring` → "Scoring", else "Idle")
+- **Last activity**: `run.updated_at` or latest iteration's `created_at`, whichever is newer
+- **Elapsed time**: `Date.now() - run.created_at`, updated via `setInterval` every second (only while status is active)
 
-**File: `supabase/functions/start-run/index.ts`**
-- After computing scores, if `allResults.length > 0`, call the AI with:
-  - The current prompt
-  - A summary of errors (which files had wrong counts, false positives/negatives)
-  - Ask it to produce: `{ "revised_prompt": "...", "changes_made": "...", "analysis": "..." }`
-- Save `reasoning_json` and a new field or use `prompt_diff` to store the suggested next prompt
-- Store the suggested prompt in the iteration's `reasoning_json.suggested_prompt`
+### Technical changes
 
-### 2. Update ReviewPanel to use AI-suggested prompt
+**File: `src/pages/RunDetail.tsx`**
 
-**File: `src/components/ReviewPanel.tsx`**
-- Read `latestIteration.reasoning_json.suggested_prompt` as the default prompt text (falling back to the iteration's `prompt_text`)
-- Show a clear label: "AI-suggested prompt for next iteration" with a note about what changed
-- Show the AI's analysis of what went wrong and what it changed
-- User can still edit before starting
+- Add a new `useQuery` for total file count: `supabase.from("dataset_files").select("id", { count: "exact", head: true }).eq("dataset_id", run.dataset_id)`
+- Add a new `useQuery` for current iteration result count (enabled only when there's an active iteration with `processing`/`scoring` status): count from `iteration_results` for that iteration
+- Add realtime subscription on `iteration_results` table filtered by the active iteration to trigger refetch of the count
+- Add a `useEffect` with `setInterval(1000)` to compute elapsed time from `run.created_at`, clearing when run is no longer active
+- Render a new `Card` section between header and stats cards containing:
+  - Progress bar (using existing `Progress` component) with label like "12 / 48 files"
+  - Stage text derived from latest iteration status
+  - Last activity as relative time (e.g., "3s ago") using `date-fns.formatDistanceToNow`
+  - Elapsed time formatted as `HH:MM:SS`
 
-### 3. Show results expanded by default for latest completed iteration
+### UI layout
 
-**File: `src/components/IterationCard.tsx`**
-- Default `resultsOpen` to `true` when `isLatest && iteration.status === "completed" && totalPages > 0`
-- This ensures the user sees results immediately without clicking
+```text
+┌──────────────────────────────────────────────────┐
+│  Stage: Processing Pass 1    Elapsed: 00:04:32   │
+│  ████████████░░░░░░░░░░░░  12 / 48 files         │
+│  Last activity: 3s ago                           │
+└──────────────────────────────────────────────────┘
+```
 
-### 4. Handle the "completed with 0 results" case better
-
-The current code already marks iterations as `failed` when 0 results exist (from the previous fix), but iteration 1 was created before that fix. Going forward this won't happen. No change needed.
-
-### Files to change
-- `supabase/functions/start-run/index.ts` — add AI prompt refinement after scoring
-- `src/components/ReviewPanel.tsx` — use AI-suggested prompt, show analysis
-- `src/components/IterationCard.tsx` — auto-expand results for latest iteration
+The progress section only shows meaningful data when the run is in an active state; otherwise it shows "Idle" with no progress bar.
 
