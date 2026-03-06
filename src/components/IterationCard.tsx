@@ -97,6 +97,18 @@ export function IterationCard({ iteration, isLatest }: { iteration: Iteration; i
           </div>
         )}
 
+        {/* Failed / no results state */}
+        {iteration.status === "completed" && totalPages === 0 && (
+          <div className="bg-destructive/10 border border-destructive/20 rounded-md p-3 text-sm text-destructive">
+            Processing failed — no results were recorded. This may be due to rate limiting or a timeout.
+          </div>
+        )}
+        {iteration.status === "failed" && (
+          <div className="bg-destructive/10 border border-destructive/20 rounded-md p-3 text-sm text-destructive">
+            This iteration failed. The AI service may have been unavailable or rate limited.
+          </div>
+        )}
+
         {/* Processing indicator */}
         {["processing", "scoring", "pending"].includes(iteration.status) && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

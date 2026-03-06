@@ -383,23 +383,33 @@ function jsonResp(data: any, status = 200) {
   });
 }
 
-async function callAI(apiKey: string, model: string, messages: any[]): Promise<string> {
-  const resp = await fetch(AI_GATEWAY, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model, messages }),
-  });
+async function callAI(apiKey: string, model: string, messages: any[], maxRetries = 3): Promise<string> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(AI_GATEWAY, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model, messages }),
+    });
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`AI gateway ${resp.status}: ${errText}`);
+    if (resp.status === 429 && attempt < maxRetries) {
+      const backoffMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
+      console.log(`Rate limited (429), retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      continue;
+    }
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`AI gateway ${resp.status}: ${errText}`);
+    }
+
+    const data = await resp.json();
+    return data.choices?.[0]?.message?.content ?? "";
   }
-
-  const data = await resp.json();
-  return data.choices?.[0]?.message?.content ?? "";
+  throw new Error("Max retries exceeded for AI gateway");
 }
 
 function parseJsonFromText(text: string): any | null {

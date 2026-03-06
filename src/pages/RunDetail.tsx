@@ -64,9 +64,8 @@ export default function RunDetail() {
   const isPaused = run.status === "paused_manual";
   const isRunning = run.status === "running";
   const latestIteration = iterations?.at(-1);
-  const bestFiltered = iterations?.length
-    ? Math.max(...iterations.filter((i) => i.after_gate_score != null).map((i) => Number(i.after_gate_score)))
-    : null;
+  const scores = iterations?.filter((i) => i.after_gate_score != null).map((i) => Number(i.after_gate_score)) ?? [];
+  const bestFiltered = scores.length > 0 ? Math.max(...scores) : null;
 
   // Chart data
   const chartData = iterations?.filter(i => i.after_gate_score != null || i.e2e_score != null).map((iter) => ({
