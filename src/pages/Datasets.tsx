@@ -11,6 +11,17 @@ import { Label } from "@/components/ui/label";
 import { Plus, Upload, Database, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import * as pdfjsLib from "pdfjs-dist";
+// @ts-ignore - vite worker import
+import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+async function countPdfPages(file: File): Promise<number> {
+  const buf = await file.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+  return doc.numPages;
+}
 
 type GroundTruthRow = { file_name: string; page_number: number; asset_type: string; count: number };
 
@@ -85,18 +96,27 @@ export default function Datasets() {
         .single();
       if (dsError) throw dsError;
 
-      // Upload PDFs
-      const fileRecords = [];
+      // Upload PDFs once each, then create one dataset_files row per page
+      const fileRecords: any[] = [];
       for (const file of pdfFiles) {
         const storagePath = `${dataset.id}/${file.name}`;
         const { error: uploadError } = await supabase.storage.from("pdfs").upload(storagePath, file);
         if (uploadError) throw uploadError;
-        fileRecords.push({
-          dataset_id: dataset.id,
-          file_name: file.name,
-          storage_path: storagePath,
-          page_number: 1,
-        });
+        let numPages = 1;
+        try {
+          numPages = await countPdfPages(file);
+        } catch (err) {
+          console.error(`Failed to count pages for ${file.name}`, err);
+          toast.warning(`Could not read page count for ${file.name}; defaulting to 1 page`);
+        }
+        for (let p = 1; p <= numPages; p++) {
+          fileRecords.push({
+            dataset_id: dataset.id,
+            file_name: file.name,
+            storage_path: storagePath,
+            page_number: p,
+          });
+        }
       }
       const { error: filesError } = await supabase.from("dataset_files").insert(fileRecords);
       if (filesError) throw filesError;
