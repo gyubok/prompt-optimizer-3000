@@ -20,9 +20,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 async function countPdfPages(file: File): Promise<number> {
   const buf = await file.arrayBuffer();
   const doc = await pdfjsLib.getDocument({ data: buf }).promise;
-  const n = doc.numPages;
-  await doc.destroy();
-  return n;
+  return doc.numPages;
 }
 
 type GroundTruthRow = { file_name: string; page_number: number; asset_type: string; count: number };
