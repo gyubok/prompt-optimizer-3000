@@ -96,18 +96,27 @@ export default function Datasets() {
         .single();
       if (dsError) throw dsError;
 
-      // Upload PDFs
-      const fileRecords = [];
+      // Upload PDFs once each, then create one dataset_files row per page
+      const fileRecords: any[] = [];
       for (const file of pdfFiles) {
         const storagePath = `${dataset.id}/${file.name}`;
         const { error: uploadError } = await supabase.storage.from("pdfs").upload(storagePath, file);
         if (uploadError) throw uploadError;
-        fileRecords.push({
-          dataset_id: dataset.id,
-          file_name: file.name,
-          storage_path: storagePath,
-          page_number: 1,
-        });
+        let numPages = 1;
+        try {
+          numPages = await countPdfPages(file);
+        } catch (err) {
+          console.error(`Failed to count pages for ${file.name}`, err);
+          toast.warning(`Could not read page count for ${file.name}; defaulting to 1 page`);
+        }
+        for (let p = 1; p <= numPages; p++) {
+          fileRecords.push({
+            dataset_id: dataset.id,
+            file_name: file.name,
+            storage_path: storagePath,
+            page_number: p,
+          });
+        }
       }
       const { error: filesError } = await supabase.from("dataset_files").insert(fileRecords);
       if (filesError) throw filesError;
