@@ -11,6 +11,19 @@ import { Label } from "@/components/ui/label";
 import { Plus, Upload, Database, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import * as pdfjsLib from "pdfjs-dist";
+// @ts-ignore - vite worker import
+import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+async function countPdfPages(file: File): Promise<number> {
+  const buf = await file.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+  const n = doc.numPages;
+  await doc.destroy();
+  return n;
+}
 
 type GroundTruthRow = { file_name: string; page_number: number; asset_type: string; count: number };
 
