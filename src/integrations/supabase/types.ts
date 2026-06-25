@@ -77,6 +77,7 @@ export type Database = {
           dataset_id: string
           file_name: string
           id: string
+          locations: Json
           page_number: number
         }
         Insert: {
@@ -85,6 +86,7 @@ export type Database = {
           dataset_id: string
           file_name: string
           id?: string
+          locations?: Json
           page_number?: number
         }
         Update: {
@@ -93,6 +95,7 @@ export type Database = {
           dataset_id?: string
           file_name?: string
           id?: string
+          locations?: Json
           page_number?: number
         }
         Relationships: [
@@ -121,6 +124,8 @@ export type Database = {
           pass2_raw_output: string | null
           pass2_valid_json: boolean | null
           predicted_count: number
+          spatial_matches: Json | null
+          spatial_score: number | null
           truth_count: number
         }
         Insert: {
@@ -138,6 +143,8 @@ export type Database = {
           pass2_raw_output?: string | null
           pass2_valid_json?: boolean | null
           predicted_count?: number
+          spatial_matches?: Json | null
+          spatial_score?: number | null
           truth_count: number
         }
         Update: {
@@ -155,6 +162,8 @@ export type Database = {
           pass2_raw_output?: string | null
           pass2_valid_json?: boolean | null
           predicted_count?: number
+          spatial_matches?: Json | null
+          spatial_score?: number | null
           truth_count?: number
         }
         Relationships: [
@@ -175,6 +184,7 @@ export type Database = {
           cumulative_cost: number | null
           e2e_score: number | null
           estimated_cost: number | null
+          gemini_file_cache: Json
           id: string
           iteration_number: number
           prompt_diff: string | null
@@ -191,6 +201,7 @@ export type Database = {
           cumulative_cost?: number | null
           e2e_score?: number | null
           estimated_cost?: number | null
+          gemini_file_cache?: Json
           id?: string
           iteration_number: number
           prompt_diff?: string | null
@@ -207,6 +218,7 @@ export type Database = {
           cumulative_cost?: number | null
           e2e_score?: number | null
           estimated_cost?: number | null
+          gemini_file_cache?: Json
           id?: string
           iteration_number?: number
           prompt_diff?: string | null
@@ -232,6 +244,7 @@ export type Database = {
           created_at: string
           current_iteration: number
           dataset_id: string
+          floor_plan_prompt: string | null
           id: string
           initial_prompt: string
           max_iterations: number
@@ -246,6 +259,7 @@ export type Database = {
           created_at?: string
           current_iteration?: number
           dataset_id: string
+          floor_plan_prompt?: string | null
           id?: string
           initial_prompt: string
           max_iterations?: number
@@ -260,6 +274,7 @@ export type Database = {
           created_at?: string
           current_iteration?: number
           dataset_id?: string
+          floor_plan_prompt?: string | null
           id?: string
           initial_prompt?: string
           max_iterations?: number
