@@ -34,15 +34,25 @@ serve(async (req) => {
   const lovableApiKey = Deno.env.get("LOVABLE_API_KEY")!;
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
+  let payload: any;
   try {
-    const { run_id, continue_processing, iteration_id, offset, start_next, prompt_text } = await req.json();
-    if (!run_id) throw new Error("run_id is required");
+    payload = await req.json();
+  } catch (e) {
+    return jsonResp({ error: "Invalid JSON" }, 400);
+  }
+  const { run_id, continue_processing, iteration_id, offset, start_next, prompt_text } = payload;
+  if (!run_id) return jsonResp({ error: "run_id required" }, 400);
 
+  // Run the heavy work in the background so the HTTP request returns immediately
+  // and never hits the 150s idle timeout. The function self-invokes for further batches.
+  // @ts-ignore - EdgeRuntime is provided by Supabase Edge runtime
+  EdgeRuntime.waitUntil((async () => {
+    try {
     const { data: run, error: runErr } = await supabase.from("runs").select("*").eq("id", run_id).single();
     if (runErr) throw runErr;
 
     if (!start_next && !continue_processing && ["stopped", "failed", "completed"].includes(run.status)) {
-      return jsonResp({ status: "skipped", reason: `Run is ${run.status}` });
+      return;
     }
 
     const { data: files, error: filesErr } = await supabase
