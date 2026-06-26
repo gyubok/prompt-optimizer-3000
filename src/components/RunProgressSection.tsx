@@ -91,12 +91,18 @@ export function RunProgressSection({ run, iterations }: { run: Run; iterations?:
     return () => clearInterval(id);
   }, [isActive, run.created_at]);
 
-  // Last activity
+  // Last activity (prefer iteration.last_progress_at when present)
   const lastActivity = useMemo(() => {
     const dates = [new Date(run.updated_at)];
     if (latestIteration) dates.push(new Date(latestIteration.created_at));
+    const lpa = (latestIteration as any)?.last_progress_at;
+    if (lpa) dates.push(new Date(lpa));
     return new Date(Math.max(...dates.map(d => d.getTime())));
-  }, [run.updated_at, latestIteration?.created_at]);
+  }, [run.updated_at, latestIteration?.created_at, (latestIteration as any)?.last_progress_at]);
+
+  const progressLog: { ts: string; message: string }[] = Array.isArray((latestIteration as any)?.progress_log)
+    ? ((latestIteration as any).progress_log as any[]).slice(-5).reverse()
+    : [];
 
   const stage = getStageLabel(latestIteration?.status);
   const total = totalFiles ?? 0;
@@ -119,6 +125,18 @@ export function RunProgressSection({ run, iterations }: { run: Run; iterations?:
         <p className="text-xs text-muted-foreground">
           Last activity: {formatDistanceToNow(lastActivity, { addSuffix: true })}
         </p>
+        {progressLog.length > 0 && (
+          <div className="mt-2 border-t pt-2 space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">Recent activity</p>
+            <ul className="space-y-0.5 font-mono text-[11px] text-muted-foreground">
+              {progressLog.map((p, i) => (
+                <li key={i} className="truncate">
+                  <span className="opacity-60">{new Date(p.ts).toLocaleTimeString()}</span> — {p.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
