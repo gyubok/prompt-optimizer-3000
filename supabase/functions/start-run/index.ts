@@ -7,7 +7,21 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 1; // Process one file per invocation, self-invoke between, to survive edge wall-time limits.
+const MAX_LOG_ENTRIES = 200;
+
+async function logProgress(supabase: any, iterationId: string | undefined, message: string, extra: Record<string, any> = {}) {
+  console.log(`[progress] ${iterationId ?? "-"} ${message}`, extra);
+  if (!iterationId) return;
+  try {
+    const { data: row } = await supabase.from("iterations").select("progress_log").eq("id", iterationId).single();
+    const existing: any[] = Array.isArray(row?.progress_log) ? row.progress_log : [];
+    const next = [...existing, { ts: new Date().toISOString(), message, ...extra }].slice(-MAX_LOG_ENTRIES);
+    await supabase.from("iterations").update({ progress_log: next, last_progress_at: new Date().toISOString() }).eq("id", iterationId);
+  } catch (e) {
+    console.error("logProgress failed:", e);
+  }
+}
 const GEMINI_BASE = "https://generativelanguage.googleapis.com";
 const PASS1_MODEL = "gemini-2.5-flash";
 const PASS2_MODEL = "gemini-2.5-pro";
