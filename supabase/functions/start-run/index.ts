@@ -312,7 +312,7 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
     if (allResults.length === 0) {
       await supabase.from("iterations").update({ status: "failed" }).eq("id", currentIterationId);
       await supabase.from("runs").update({ status: "failed" }).eq("id", run_id);
-      return jsonResp({ status: "failed", reason: "No results recorded" });
+      return;
     }
 
     // Primary metric: after-gate exact match rate over (file, page) that reached Pass 2.
