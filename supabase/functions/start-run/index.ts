@@ -85,7 +85,7 @@ serve(async (req) => {
       const iterNum = run.current_iteration + 1;
       if (iterNum > run.max_iterations) {
         await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
-        return jsonResp({ status: "completed", reason: "Max iterations reached" });
+        return;
       }
       const { data: iteration, error: iterErr } = await supabase
         .from("iterations")
