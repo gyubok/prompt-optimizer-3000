@@ -23,6 +23,7 @@ export default function NewRun() {
   const [pass1Threshold, setPass1Threshold] = useState(0.7);
   const [maxIterations, setMaxIterations] = useState(20);
   const [stallThreshold, setStallThreshold] = useState(3);
+  const [floorPlanPrompt, setFloorPlanPrompt] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const { data: datasets } = useQuery({
@@ -60,6 +61,7 @@ export default function NewRun() {
           pass1_threshold: pass1Threshold,
           max_iterations: maxIterations,
           stall_threshold: stallThreshold,
+          floor_plan_prompt: floorPlanPrompt.trim() || null,
           status: "queued",
         })
         .select()
@@ -140,6 +142,19 @@ export default function NewRun() {
               Advanced Settings
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-3 space-y-4">
+              <div>
+                <Label>Floor Plan Detection Prompt (Pass 1)</Label>
+                <Textarea
+                  value={floorPlanPrompt}
+                  onChange={(e) => setFloorPlanPrompt(e.target.value)}
+                  placeholder="Leave blank to use the default floor-plan relevance prompt. Use {ASSET_TYPE} as a placeholder."
+                  className="mt-1 min-h-[120px] font-mono text-xs"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Custom prompt that decides whether a page is a relevant floor plan. Must return strict JSON with{" "}
+                  <code>relevant</code>, <code>confidence</code>, <code>keywords</code>, <code>hint_point</code>.
+                </p>
+              </div>
               <div>
                 <Label>Pass 1 Threshold: {pass1Threshold.toFixed(2)}</Label>
                 <Slider

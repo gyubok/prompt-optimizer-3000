@@ -7,14 +7,30 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const BATCH_SIZE = 15;
-const AI_GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
+const BATCH_SIZE = 10;
+const GEMINI_BASE = "https://generativelanguage.googleapis.com";
+const PASS1_MODEL = "gemini-2.5-flash";
+const PASS2_MODEL = "gemini-2.5-pro";
+const REFINE_MODEL = "gemini-2.5-flash";
+const LOVABLE_AI_GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
+const IOU_MATCH_THRESHOLD = 0.5;
+
+const DEFAULT_PASS1_PROMPT = `You are screening an architectural document page. Determine whether this page is a FLOOR PLAN (a scaled top-down plan view of a building or floor, typically showing walls, rooms, dimensions, and asset symbols) on which "{ASSET_TYPE}" assets could be detected.
+
+Respond with STRICT JSON ONLY (no prose, no markdown fences):
+{
+  "relevant": true | false,
+  "confidence": 0.0-1.0,
+  "keywords": ["..."],
+  "hint_point": "brief one-line reason"
+}`;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const geminiKey = Deno.env.get("GEMINI_API_KEY")!;
   const lovableApiKey = Deno.env.get("LOVABLE_API_KEY")!;
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
@@ -22,20 +38,13 @@ serve(async (req) => {
     const { run_id, continue_processing, iteration_id, offset, start_next, prompt_text } = await req.json();
     if (!run_id) throw new Error("run_id is required");
 
-    // Fetch run
-    const { data: run, error: runErr } = await supabase
-      .from("runs")
-      .select("*")
-      .eq("id", run_id)
-      .single();
+    const { data: run, error: runErr } = await supabase.from("runs").select("*").eq("id", run_id).single();
     if (runErr) throw runErr;
 
-    // Check if run was stopped/failed (unless starting next)
-    if (!start_next && ["stopped", "failed", "completed"].includes(run.status)) {
+    if (!start_next && !continue_processing && ["stopped", "failed", "completed"].includes(run.status)) {
       return jsonResp({ status: "skipped", reason: `Run is ${run.status}` });
     }
 
-    // Fetch dataset files
     const { data: files, error: filesErr } = await supabase
       .from("dataset_files")
       .select("*")
@@ -44,7 +53,6 @@ serve(async (req) => {
       .order("page_number");
     if (filesErr) throw filesErr;
 
-    // Fetch ground truth for this asset type
     const { data: truthRows, error: gtErr } = await supabase
       .from("ground_truth")
       .select("*")
@@ -52,16 +60,17 @@ serve(async (req) => {
       .eq("asset_type", run.asset_type);
     if (gtErr) throw gtErr;
 
-    // Build truth lookup: file_name|page_number -> count
-    const truthMap = new Map<string, number>();
+    const truthMap = new Map<string, { count: number; locations: any[] }>();
     for (const gt of truthRows) {
-      truthMap.set(`${gt.file_name}|${gt.page_number}`, gt.count);
+      truthMap.set(`${gt.file_name}|${gt.page_number}`, {
+        count: gt.count,
+        locations: Array.isArray(gt.locations) ? gt.locations : [],
+      });
     }
 
     let currentIterationId = iteration_id;
     let currentOffset = offset || 0;
 
-    // start_next mode: create next iteration with provided prompt
     if (start_next) {
       const iterNum = run.current_iteration + 1;
       if (iterNum > run.max_iterations) {
@@ -81,12 +90,7 @@ serve(async (req) => {
         .single();
       if (iterErr) throw iterErr;
       currentIterationId = iteration.id;
-
-      await supabase
-        .from("runs")
-        .update({ status: "running", current_iteration: iterNum })
-        .eq("id", run_id);
-
+      await supabase.from("runs").update({ status: "running", current_iteration: iterNum }).eq("id", run_id);
       currentOffset = 0;
     } else if (!continue_processing) {
       const iterNum = run.current_iteration + 1;
@@ -103,52 +107,32 @@ serve(async (req) => {
         .single();
       if (iterErr) throw iterErr;
       currentIterationId = iteration.id;
-
-      // Update run status
-      await supabase
-        .from("runs")
-        .update({ status: "running", current_iteration: iterNum })
-        .eq("id", run_id);
-
+      await supabase.from("runs").update({ status: "running", current_iteration: iterNum }).eq("id", run_id);
       currentOffset = 0;
     }
 
-    // Fetch the current iteration's prompt for detection
     const { data: currentIter } = await supabase
       .from("iterations")
       .select("prompt_text")
       .eq("id", currentIterationId)
       .single();
     const detectionPrompt = currentIter?.prompt_text || run.initial_prompt;
+    const pass1PromptTemplate = run.floor_plan_prompt?.trim() || DEFAULT_PASS1_PROMPT;
+    const pass1Prompt = pass1PromptTemplate.replace(/\{ASSET_TYPE\}/g, run.asset_type);
 
-    // Process batch
     const batch = files.slice(currentOffset, currentOffset + BATCH_SIZE);
 
     for (const file of batch) {
-      // Check if run was stopped mid-processing
-      const { data: freshRun } = await supabase
-        .from("runs")
-        .select("status")
-        .eq("id", run_id)
-        .single();
+      const { data: freshRun } = await supabase.from("runs").select("status").eq("id", run_id).single();
       if (freshRun && ["stopped", "stopping", "failed"].includes(freshRun.status)) {
-        // Mark iteration as failed and stop
-        await supabase
-          .from("iterations")
-          .update({ status: "failed" })
-          .eq("id", currentIterationId);
+        await supabase.from("iterations").update({ status: "failed" }).eq("id", currentIterationId);
         if (freshRun.status === "stopping") {
           await supabase.from("runs").update({ status: "stopped" }).eq("id", run_id);
         }
         return jsonResp({ status: "stopped" });
       }
 
-      const truthCount = truthMap.get(`${file.file_name}|${file.page_number}`) ?? 0;
-
-      // Download the PDF page from storage
-      const { data: fileData, error: dlErr } = await supabase.storage
-        .from("pdfs")
-        .download(file.storage_path);
+      const truth = truthMap.get(`${file.file_name}|${file.page_number}`) ?? { count: 0, locations: [] };
 
       let pass1Relevant = true;
       let pass1Confidence: number | null = null;
@@ -158,88 +142,98 @@ serve(async (req) => {
       let pass2Detections: any = null;
       let pass2RawOutput: string | null = null;
       let pass2ValidJson: boolean | null = null;
+      let spatialScore: number | null = null;
+      let spatialMatches: any = null;
 
-      if (dlErr || !fileData) {
-        console.error(`Failed to download ${file.storage_path}:`, dlErr);
-        // Still record result with 0 predicted
-      } else {
-        // Convert PDF to base64
-        const arrayBuffer = await fileData.arrayBuffer();
-        const uint8 = new Uint8Array(arrayBuffer);
-        let binary = "";
-        for (let i = 0; i < uint8.length; i++) {
-          binary += String.fromCharCode(uint8[i]);
-        }
-        const base64 = btoa(binary);
-        const mimeType = "application/pdf";
+      try {
+        // Ensure PDF is uploaded to Gemini File API (cached per storage_path).
+        const fileUri = await ensureGeminiFile(supabase, geminiKey, file.storage_path);
 
-        // === PASS 1: Relevance filter ===
+        // === PASS 1: Floor-plan relevance ===
         try {
-          const pass1Response = await callAI(lovableApiKey, "google/gemini-2.5-flash", [
+          const p1Text = await callGeminiJSON(
+            geminiKey,
+            PASS1_MODEL,
+            [
+              { text: pass1Prompt },
+              { text: `Analyze page ${file.page_number} of the attached PDF and respond with strict JSON only.` },
+              { fileData: { fileUri, mimeType: "application/pdf" } },
+            ],
             {
-              role: "system",
-              content: `You are a document analysis assistant. Determine if the given PDF page is relevant to detecting "${run.asset_type}" assets. Respond with a JSON object: { "relevant": true/false, "confidence": 0.0-1.0, "keywords": ["keyword1", ...], "hint_point": "brief reason" }`,
+              type: "OBJECT",
+              properties: {
+                relevant: { type: "BOOLEAN" },
+                confidence: { type: "NUMBER" },
+                keywords: { type: "ARRAY", items: { type: "STRING" } },
+                hint_point: { type: "STRING" },
+              },
+              required: ["relevant", "confidence"],
             },
-            {
-              role: "user",
-              content: [
-                {
-                  type: "file",
-                  file: { filename: file.file_name, file_data: `data:${mimeType};base64,${base64}` },
-                },
-                {
-                  type: "text",
-                  text: `Is this page relevant to "${run.asset_type}" detection? Analyze and respond with JSON only.`,
-                },
-              ],
-            },
-          ]);
-
-          const pass1Parsed = parseJsonFromText(pass1Response);
-          if (pass1Parsed) {
-            pass1Relevant = pass1Parsed.relevant ?? true;
-            pass1Confidence = pass1Parsed.confidence ?? null;
-            pass1Keywords = pass1Parsed.keywords ?? null;
-            pass1HintPoint = pass1Parsed.hint_point ?? null;
-          }
+          );
+          const p1 = JSON.parse(p1Text);
+          pass1Relevant = !!p1.relevant;
+          pass1Confidence = typeof p1.confidence === "number" ? p1.confidence : null;
+          pass1Keywords = Array.isArray(p1.keywords) ? p1.keywords : null;
+          pass1HintPoint = p1.hint_point ?? null;
         } catch (e) {
           console.error("Pass 1 error:", e);
-          // Default to relevant on error
+          // On failure, default to relevant so Pass 2 still runs.
+          pass1Relevant = true;
         }
 
-        // === PASS 2: Detection (only if relevant or above threshold) ===
-        if (pass1Relevant && (pass1Confidence === null || pass1Confidence >= run.pass1_threshold)) {
+        // === PASS 2: Detection with bounding boxes ===
+        const passesGate = pass1Relevant && (pass1Confidence === null || pass1Confidence >= run.pass1_threshold);
+        if (passesGate) {
           try {
-            const pass2Response = await callAI(lovableApiKey, "google/gemini-2.5-pro", [
-              {
-                role: "system",
-                content: `You are a document asset detection assistant. Use the following detection prompt to analyze the PDF page and return detections as JSON.\n\nDetection prompt:\n${detectionPrompt}\n\nRespond ONLY with a JSON object: { "detections": [ { "description": "...", "location": "..." } ], "count": <number> }`,
-              },
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "file",
-                    file: { filename: file.file_name, file_data: `data:${mimeType};base64,${base64}` },
-                  },
-                  {
-                    type: "text",
-                    text: `Detect all "${run.asset_type}" assets on this page. Return JSON only.`,
-                  },
-                ],
-              },
-            ]);
+            const p2Text = await callGeminiJSON(
+              geminiKey,
+              PASS2_MODEL,
+              [
+                {
+                  text: `You are detecting "${run.asset_type}" assets on page ${file.page_number} of an architectural floor plan.
 
-            pass2RawOutput = pass2Response;
-            const pass2Parsed = parseJsonFromText(pass2Response);
-            if (pass2Parsed) {
-              pass2ValidJson = true;
-              pass2Detections = pass2Parsed.detections ?? [];
-              predictedCount = pass2Parsed.count ?? (pass2Parsed.detections?.length ?? 0);
-            } else {
-              pass2ValidJson = false;
-              predictedCount = 0;
-            }
+Detection instructions:
+${detectionPrompt}
+
+Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integer coordinates on a 0-1000 scale: [ymin, xmin, ymax, xmax]. instance_id must be a stable short string unique within this page (e.g. "1", "2", ...).`,
+                },
+                { fileData: { fileUri, mimeType: "application/pdf" } },
+              ],
+              {
+                type: "OBJECT",
+                properties: {
+                  detections: {
+                    type: "ARRAY",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        instance_name: { type: "STRING" },
+                        instance_id: { type: "STRING" },
+                        ymin: { type: "INTEGER" },
+                        xmin: { type: "INTEGER" },
+                        ymax: { type: "INTEGER" },
+                        xmax: { type: "INTEGER" },
+                        confidence: { type: "NUMBER" },
+                      },
+                      required: ["instance_name", "instance_id", "ymin", "xmin", "ymax", "xmax"],
+                    },
+                  },
+                  count: { type: "INTEGER" },
+                },
+                required: ["detections", "count"],
+              },
+            );
+            pass2RawOutput = p2Text;
+            const p2 = JSON.parse(p2Text);
+            pass2ValidJson = true;
+            pass2Detections = Array.isArray(p2.detections) ? p2.detections : [];
+            predictedCount = typeof p2.count === "number" ? p2.count : pass2Detections.length;
+
+            // IoU matching against ground truth (display-only in v1; not used in scoring).
+            const matches = matchByIoU(pass2Detections, truth.locations, IOU_MATCH_THRESHOLD);
+            spatialMatches = matches;
+            const denom = Math.max(pass2Detections.length, truth.locations.length);
+            spatialScore = denom > 0 ? matches.length / denom : null;
           } catch (e) {
             console.error("Pass 2 error:", e);
             pass2RawOutput = String(e);
@@ -247,22 +241,22 @@ serve(async (req) => {
             predictedCount = 0;
           }
         } else {
-          // Page filtered out by Pass 1
           pass1Relevant = false;
           predictedCount = 0;
         }
+      } catch (e) {
+        console.error(`File processing failed (${file.file_name} p${file.page_number}):`, e);
       }
 
-      const delta = predictedCount - truthCount;
+      const delta = predictedCount - truth.count;
 
-      // Upsert result
       const { error: upsertErr } = await supabase.from("iteration_results").upsert(
         {
           iteration_id: currentIterationId,
           file_name: file.file_name,
           page_number: file.page_number,
           predicted_count: predictedCount,
-          truth_count: truthCount,
+          truth_count: truth.count,
           delta,
           pass1_relevant: pass1Relevant,
           pass1_confidence: pass1Confidence,
@@ -271,14 +265,13 @@ serve(async (req) => {
           pass2_detections: pass2Detections,
           pass2_raw_output: pass2RawOutput,
           pass2_valid_json: pass2ValidJson,
+          spatial_score: spatialScore,
+          spatial_matches: spatialMatches,
         },
-        { onConflict: "iteration_id,file_name,page_number", ignoreDuplicates: false }
+        { onConflict: "iteration_id,file_name,page_number", ignoreDuplicates: false },
       );
-      if (upsertErr) {
-        console.error(`Upsert error for ${file.file_name} p${file.page_number}:`, upsertErr);
-      }
+      if (upsertErr) console.error(`Upsert error for ${file.file_name} p${file.page_number}:`, upsertErr);
 
-      // Update batch cursor
       await supabase
         .from("iterations")
         .update({ batch_cursor: currentOffset + batch.indexOf(file) + 1 })
@@ -287,16 +280,11 @@ serve(async (req) => {
 
     const nextOffset = currentOffset + BATCH_SIZE;
 
-    // If more files remain, self-invoke
     if (nextOffset < files.length) {
-      // Fire-and-forget self-invocation
       const fnUrl = `${supabaseUrl}/functions/v1/start-run`;
       fetch(fnUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${serviceRoleKey}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${serviceRoleKey}` },
         body: JSON.stringify({
           run_id,
           continue_processing: true,
@@ -304,109 +292,102 @@ serve(async (req) => {
           offset: nextOffset,
         }),
       }).catch((e) => console.error("Self-invocation error:", e));
-
       return jsonResp({ status: "processing", offset: nextOffset, total: files.length });
     }
 
-    // All files processed — score the iteration
+    // === SCORING ===
     const { data: results } = await supabase
       .from("iteration_results")
       .select("*")
       .eq("iteration_id", currentIterationId);
-
     const allResults = results || [];
 
-    // If no results were recorded, mark as failed
     if (allResults.length === 0) {
-      console.error("No results recorded for iteration — likely all AI calls failed");
-      await supabase
-        .from("iterations")
-        .update({ status: "failed" })
-        .eq("id", currentIterationId);
+      await supabase.from("iterations").update({ status: "failed" }).eq("id", currentIterationId);
       await supabase.from("runs").update({ status: "failed" }).eq("id", run_id);
-      return jsonResp({ status: "failed", reason: "No results recorded — AI calls may have been rate limited" });
+      return jsonResp({ status: "failed", reason: "No results recorded" });
     }
 
-    const relevantResults = allResults.filter((r) => r.pass1_relevant);
+    // Primary metric: after-gate exact match rate over (file, page) that reached Pass 2.
+    const gated = allResults.filter((r) => r.pass1_relevant);
+    const afterGateScore = gated.length > 0
+      ? gated.filter((r) => r.predicted_count === r.truth_count).length / gated.length
+      : 0;
 
-    const afterGateScore =
-      relevantResults.length > 0
-        ? relevantResults.filter((r) => r.predicted_count === r.truth_count).length / relevantResults.length
-        : 0;
+    // Secondary (display only): E2E exact match — Pass 1 misses count as predicted_count = 0.
+    const e2eScore = allResults.length > 0
+      ? allResults.filter((r) => {
+          const predicted = r.pass1_relevant ? r.predicted_count : 0;
+          return predicted === r.truth_count;
+        }).length / allResults.length
+      : 0;
 
-    const e2eScore =
-      allResults.length > 0
-        ? allResults.filter((r) => {
-            if (!r.pass1_relevant) return r.truth_count === 0;
-            return r.predicted_count === r.truth_count;
-          }).length / allResults.length
-        : 0;
-
-    // === AI Prompt Refinement ===
+    // === Prompt Refinement via Lovable AI Gateway ===
     let reasoningJson: any = null;
     try {
-      // Build error summary for the AI
       const errors = allResults
-        .filter((r) => {
-          if (!r.pass1_relevant) return r.truth_count !== 0;
-          return r.predicted_count !== r.truth_count;
-        })
+        .filter((r) => (r.pass1_relevant ? r.predicted_count !== r.truth_count : r.truth_count !== 0))
         .map((r) => ({
           file: r.file_name,
           page: r.page_number,
-          predicted: r.predicted_count,
+          predicted: r.pass1_relevant ? r.predicted_count : 0,
           actual: r.truth_count,
-          delta: r.predicted_count - r.truth_count,
-          relevant: r.pass1_relevant,
+          delta: (r.pass1_relevant ? r.predicted_count : 0) - r.truth_count,
+          gate_passed: r.pass1_relevant,
         }));
-
       const correctCount = allResults.length - errors.length;
 
-      const refinementPrompt = `You are a prompt engineering expert. Analyze the results of a document asset detection iteration and produce an improved detection prompt.
+      const refinementPrompt = `You are a prompt engineering expert improving an architectural floor-plan asset detection prompt.
 
 Current detection prompt:
 ---
 ${detectionPrompt}
 ---
 
-Results summary:
-- Total pages: ${allResults.length}
-- Correct: ${correctCount}/${allResults.length} (${Math.round((correctCount / allResults.length) * 100)}%)
-- After-gate accuracy: ${Math.round(afterGateScore * 100)}%
-- E2E accuracy: ${Math.round(e2eScore * 100)}%
+Asset type: "${run.asset_type}"
 
-Errors (${errors.length} pages with wrong counts):
-${errors.length > 0 ? JSON.stringify(errors.slice(0, 20), null, 2) : "None"}
+Results:
+- Pages processed: ${allResults.length}
+- Correct: ${correctCount}/${allResults.length}
+- After-gate accuracy (primary): ${(afterGateScore * 100).toFixed(1)}%
+- End-to-end accuracy: ${(e2eScore * 100).toFixed(1)}%
 
-The asset type being detected is: "${run.asset_type}"
+Errors (${errors.length}):
+${errors.length > 0 ? JSON.stringify(errors.slice(0, 25), null, 2) : "None"}
 
-Analyze what went wrong and produce a revised prompt that should improve accuracy. Respond with JSON only:
+Produce a revised detection prompt that should improve after-gate accuracy. Respond with JSON only:
 {
-  "revised_prompt": "the full improved detection prompt",
-  "changes_made": "brief summary of what you changed and why",
-  "analysis": "analysis of error patterns (false positives vs false negatives, common issues)",
-  "strategy_adjustment": "what strategy changes you're making"
+  "revised_prompt": "...",
+  "changes_made": "...",
+  "analysis": "...",
+  "strategy_adjustment": "..."
 }`;
 
-      const refinementResponse = await callAI(lovableApiKey, "google/gemini-2.5-flash", [
-        { role: "user", content: refinementPrompt },
-      ]);
-
-      const parsed = parseJsonFromText(refinementResponse);
-      if (parsed && parsed.revised_prompt) {
-        reasoningJson = {
-          suggested_prompt: parsed.revised_prompt,
-          changes_made: parsed.changes_made || null,
-          analysis: parsed.analysis || null,
-          strategy_adjustment: parsed.strategy_adjustment || null,
-        };
+      const resp = await fetch(LOVABLE_AI_GATEWAY, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${lovableApiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash",
+          messages: [{ role: "user", content: refinementPrompt }],
+        }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const content = data.choices?.[0]?.message?.content ?? "";
+        const parsed = extractJson(content);
+        if (parsed?.revised_prompt) {
+          reasoningJson = {
+            suggested_prompt: parsed.revised_prompt,
+            changes_made: parsed.changes_made ?? null,
+            analysis: parsed.analysis ?? null,
+            strategy_adjustment: parsed.strategy_adjustment ?? null,
+          };
+        }
       }
     } catch (e) {
       console.error("Prompt refinement error:", e);
-      // Non-fatal — continue without refinement
     }
 
-    // Update iteration as completed
     await supabase
       .from("iterations")
       .update({
@@ -417,13 +398,22 @@ Analyze what went wrong and produce a revised prompt that should improve accurac
       })
       .eq("id", currentIterationId);
 
-    // Determine next step based on mode
     if (run.mode === "manual") {
       await supabase.from("runs").update({ status: "paused_manual" }).eq("id", run_id);
-    } else if (e2eScore >= 1.0 || run.current_iteration >= run.max_iterations) {
+    } else if (afterGateScore >= 1.0 || run.current_iteration >= run.max_iterations) {
       await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
     } else {
-      await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
+      // Auto mode: kick off next iteration with the refined prompt.
+      if (reasoningJson?.suggested_prompt) {
+        const fnUrl = `${supabaseUrl}/functions/v1/start-run`;
+        fetch(fnUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${serviceRoleKey}` },
+          body: JSON.stringify({ run_id, start_next: true, prompt_text: reasoningJson.suggested_prompt }),
+        }).catch((e) => console.error("Auto-next self-invocation error:", e));
+      } else {
+        await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
+      }
     }
 
     return jsonResp({
@@ -448,58 +438,170 @@ function jsonResp(data: any, status = 200) {
   });
 }
 
-async function callAI(apiKey: string, model: string, messages: any[], maxRetries = 3): Promise<string> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const resp = await fetch(AI_GATEWAY, {
+// ===== Gemini File API caching =====
+async function ensureGeminiFile(supabase: any, geminiKey: string, storagePath: string): Promise<string> {
+  const nowIso = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5-min safety margin
+  const { data: cached } = await supabase
+    .from("pdf_uploads")
+    .select("*")
+    .eq("storage_path", storagePath)
+    .gt("expires_at", nowIso)
+    .maybeSingle();
+  if (cached?.gemini_file_uri) return cached.gemini_file_uri;
+
+  // Download from Supabase storage
+  const { data: fileData, error: dlErr } = await supabase.storage.from("pdfs").download(storagePath);
+  if (dlErr || !fileData) throw new Error(`Failed to download ${storagePath}: ${dlErr?.message}`);
+
+  const arrayBuffer = await fileData.arrayBuffer();
+  const size = arrayBuffer.byteLength;
+
+  // Start resumable upload
+  const startResp = await fetch(
+    `${GEMINI_BASE}/upload/v1beta/files?key=${geminiKey}`,
+    {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        "X-Goog-Upload-Protocol": "resumable",
+        "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": String(size),
+        "X-Goog-Upload-Header-Content-Type": "application/pdf",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model, messages }),
-    });
+      body: JSON.stringify({ file: { display_name: storagePath } }),
+    },
+  );
+  if (!startResp.ok) throw new Error(`Gemini upload start failed: ${startResp.status} ${await startResp.text()}`);
+  const uploadUrl = startResp.headers.get("X-Goog-Upload-URL");
+  if (!uploadUrl) throw new Error("Gemini upload URL missing");
 
-    if (resp.status === 429 && attempt < maxRetries) {
-      const backoffMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
-      console.log(`Rate limited (429), retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`);
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
-      continue;
+  const finalResp = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(size),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+    },
+    body: arrayBuffer,
+  });
+  if (!finalResp.ok) throw new Error(`Gemini upload finalize failed: ${finalResp.status} ${await finalResp.text()}`);
+  const meta = await finalResp.json();
+  const fileUri = meta?.file?.uri;
+  const fileName = meta?.file?.name;
+  if (!fileUri) throw new Error("Gemini file URI missing in response");
+
+  // Poll until ACTIVE (PDF processing)
+  for (let i = 0; i < 20; i++) {
+    const stateResp = await fetch(`${GEMINI_BASE}/v1beta/${fileName}?key=${geminiKey}`);
+    if (stateResp.ok) {
+      const s = await stateResp.json();
+      if (s.state === "ACTIVE") break;
+      if (s.state === "FAILED") throw new Error("Gemini file processing FAILED");
     }
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`AI gateway ${resp.status}: ${errText}`);
-    }
-
-    const data = await resp.json();
-    return data.choices?.[0]?.message?.content ?? "";
+    await new Promise((r) => setTimeout(r, 1500));
   }
-  throw new Error("Max retries exceeded for AI gateway");
+
+  // Cache (Gemini files live ~48h)
+  const expiresAt = new Date(Date.now() + 47 * 60 * 60 * 1000).toISOString();
+  await supabase.from("pdf_uploads").upsert(
+    { storage_path: storagePath, gemini_file_uri: fileUri, gemini_file_name: fileName, expires_at: expiresAt },
+    { onConflict: "storage_path" },
+  );
+  return fileUri;
 }
 
-function parseJsonFromText(text: string): any | null {
-  try {
-    // Try direct parse
-    return JSON.parse(text);
-  } catch {
-    // Try extracting JSON from markdown code blocks
-    const match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (match) {
-      try {
-        return JSON.parse(match[1].trim());
-      } catch {
-        return null;
-      }
+// ===== Gemini generateContent with strict JSON schema =====
+async function callGeminiJSON(
+  apiKey: string,
+  model: string,
+  parts: any[],
+  responseSchema: any,
+  maxRetries = 3,
+): Promise<string> {
+  const url = `${GEMINI_BASE}/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body = {
+    contents: [{ role: "user", parts: parts.map(normalizePart) }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema,
+      temperature: 0.1,
+    },
+  };
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if ((resp.status === 429 || resp.status >= 500) && attempt < maxRetries) {
+      const backoff = Math.pow(2, attempt + 1) * 1000;
+      console.log(`Gemini ${resp.status}, retrying in ${backoff}ms`);
+      await new Promise((r) => setTimeout(r, backoff));
+      continue;
     }
-    // Try finding JSON object in text
-    const objMatch = text.match(/\{[\s\S]*\}/);
-    if (objMatch) {
-      try {
-        return JSON.parse(objMatch[0]);
-      } catch {
-        return null;
-      }
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Gemini ${resp.status}: ${errText}`);
     }
-    return null;
+    const data = await resp.json();
+    const text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).filter(Boolean).join("") ?? "";
+    return text;
   }
+  throw new Error("Gemini max retries exceeded");
+}
+
+function normalizePart(p: any): any {
+  if (p.fileData) return { file_data: { mime_type: p.fileData.mimeType, file_uri: p.fileData.fileUri } };
+  return p;
+}
+
+function extractJson(text: string): any | null {
+  try { return JSON.parse(text); } catch {}
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) { try { return JSON.parse(fence[1].trim()); } catch {} }
+  const obj = text.match(/\{[\s\S]*\}/);
+  if (obj) { try { return JSON.parse(obj[0]); } catch {} }
+  return null;
+}
+
+// ===== IoU matching =====
+function iou(a: { ymin: number; xmin: number; ymax: number; xmax: number }, b: typeof a): number {
+  const ix1 = Math.max(a.xmin, b.xmin);
+  const iy1 = Math.max(a.ymin, b.ymin);
+  const ix2 = Math.min(a.xmax, b.xmax);
+  const iy2 = Math.min(a.ymax, b.ymax);
+  const iw = Math.max(0, ix2 - ix1);
+  const ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+  const areaA = Math.max(0, a.xmax - a.xmin) * Math.max(0, a.ymax - a.ymin);
+  const areaB = Math.max(0, b.xmax - b.xmin) * Math.max(0, b.ymax - b.ymin);
+  const union = areaA + areaB - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+function matchByIoU(predictions: any[], truths: any[], threshold: number): any[] {
+  const matches: any[] = [];
+  const usedTruth = new Set<number>();
+  // Greedy: for each prediction, find best unused truth above threshold
+  for (let pi = 0; pi < predictions.length; pi++) {
+    const p = predictions[pi];
+    if (![p.ymin, p.xmin, p.ymax, p.xmax].every((v) => typeof v === "number")) continue;
+    let bestIdx = -1;
+    let bestScore = threshold;
+    for (let ti = 0; ti < truths.length; ti++) {
+      if (usedTruth.has(ti)) continue;
+      const t = truths[ti];
+      if (![t.ymin, t.xmin, t.ymax, t.xmax].every((v) => typeof v === "number")) continue;
+      const score = iou(p, t);
+      if (score >= bestScore) {
+        bestScore = score;
+        bestIdx = ti;
+      }
+    }
+    if (bestIdx >= 0) {
+      usedTruth.add(bestIdx);
+      matches.push({ pred_idx: pi, truth_idx: bestIdx, iou: Number(bestScore.toFixed(4)) });
+    }
+  }
+  return matches;
 }

@@ -238,6 +238,30 @@ export type Database = {
           },
         ]
       }
+      pdf_uploads: {
+        Row: {
+          created_at: string
+          expires_at: string
+          gemini_file_name: string
+          gemini_file_uri: string
+          storage_path: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at: string
+          gemini_file_name: string
+          gemini_file_uri: string
+          storage_path: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          gemini_file_name?: string
+          gemini_file_uri?: string
+          storage_path?: string
+        }
+        Relationships: []
+      }
       runs: {
         Row: {
           asset_type: string
