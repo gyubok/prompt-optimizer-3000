@@ -169,12 +169,15 @@ serve(async (req) => {
       let spatialScore: number | null = null;
       let spatialMatches: any = null;
 
+      await logProgress(supabase, currentIterationId, `Starting file ${currentOffset + 1}/${files.length}: ${file.file_name} p${file.page_number}`);
+
       try {
-        // Ensure PDF is uploaded to Gemini File API (cached per storage_path).
+        await logProgress(supabase, currentIterationId, `Ensuring Gemini file cache for ${file.file_name}`);
         const fileUri = await ensureGeminiFile(supabase, geminiKey, file.storage_path);
 
-        // === PASS 1: Floor-plan relevance ===
+        // === PASS 1 ===
         try {
+          await logProgress(supabase, currentIterationId, `Pass 1 (relevance) calling Gemini`);
           const p1Text = await callGeminiJSON(
             geminiKey,
             PASS1_MODEL,
@@ -199,16 +202,18 @@ serve(async (req) => {
           pass1Confidence = typeof p1.confidence === "number" ? p1.confidence : null;
           pass1Keywords = Array.isArray(p1.keywords) ? p1.keywords : null;
           pass1HintPoint = p1.hint_point ?? null;
+          await logProgress(supabase, currentIterationId, `Pass 1 done: relevant=${pass1Relevant} conf=${pass1Confidence}`);
         } catch (e) {
           console.error("Pass 1 error:", e);
-          // On failure, default to relevant so Pass 2 still runs.
+          await logProgress(supabase, currentIterationId, `Pass 1 ERROR: ${String(e).slice(0, 300)}`);
           pass1Relevant = true;
         }
 
-        // === PASS 2: Detection with bounding boxes ===
+        // === PASS 2 ===
         const passesGate = pass1Relevant && (pass1Confidence === null || pass1Confidence >= run.pass1_threshold);
         if (passesGate) {
           try {
+            await logProgress(supabase, currentIterationId, `Pass 2 (detection) calling Gemini`);
             const p2Text = await callGeminiJSON(
               geminiKey,
               PASS2_MODEL,
@@ -252,24 +257,26 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
             pass2ValidJson = true;
             pass2Detections = Array.isArray(p2.detections) ? p2.detections : [];
             predictedCount = typeof p2.count === "number" ? p2.count : pass2Detections.length;
-
-            // IoU matching against ground truth (display-only in v1; not used in scoring).
             const matches = matchByIoU(pass2Detections, truth.locations, IOU_MATCH_THRESHOLD);
             spatialMatches = matches;
             const denom = Math.max(pass2Detections.length, truth.locations.length);
             spatialScore = denom > 0 ? matches.length / denom : null;
+            await logProgress(supabase, currentIterationId, `Pass 2 done: predicted=${predictedCount} truth=${truth.count}`);
           } catch (e) {
             console.error("Pass 2 error:", e);
+            await logProgress(supabase, currentIterationId, `Pass 2 ERROR: ${String(e).slice(0, 300)}`);
             pass2RawOutput = String(e);
             pass2ValidJson = false;
             predictedCount = 0;
           }
         } else {
+          await logProgress(supabase, currentIterationId, `Skipped Pass 2 (gate failed)`);
           pass1Relevant = false;
           predictedCount = 0;
         }
       } catch (e) {
         console.error(`File processing failed (${file.file_name} p${file.page_number}):`, e);
+        await logProgress(supabase, currentIterationId, `File ERROR: ${String(e).slice(0, 300)}`);
       }
 
       const { error: upsertErr } = await supabase.from("iteration_results").upsert(
@@ -284,14 +291,19 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
           pass1_keywords: pass1Keywords,
           pass1_hint_point: pass1HintPoint,
           pass2_detections: pass2Detections,
-          pass2_raw_output: pass2RawOutput,
+          pass2_raw_output: pass2RawOutput ? pass2RawOutput.slice(0, 20000) : null,
           pass2_valid_json: pass2ValidJson,
           spatial_score: spatialScore,
           spatial_matches: spatialMatches,
         },
         { onConflict: "iteration_id,file_name,page_number", ignoreDuplicates: false },
       );
-      if (upsertErr) console.error(`Upsert error for ${file.file_name} p${file.page_number}:`, upsertErr);
+      if (upsertErr) {
+        console.error(`Upsert error for ${file.file_name} p${file.page_number}:`, upsertErr);
+        await logProgress(supabase, currentIterationId, `Upsert ERROR: ${upsertErr.message || JSON.stringify(upsertErr)}`);
+      } else {
+        await logProgress(supabase, currentIterationId, `Saved result for ${file.file_name} p${file.page_number}`);
+      }
 
       await supabase
         .from("iterations")
@@ -302,6 +314,7 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
     const nextOffset = currentOffset + BATCH_SIZE;
 
     if (nextOffset < files.length) {
+      await logProgress(supabase, currentIterationId, `Batch done, continuing at offset ${nextOffset}/${files.length}`);
       const fnUrl = `${supabaseUrl}/functions/v1/start-run`;
       fetch(fnUrl, {
         method: "POST",
