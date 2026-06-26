@@ -299,7 +299,7 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
           offset: nextOffset,
         }),
       }).catch((e) => console.error("Self-invocation error:", e));
-      return jsonResp({ status: "processing", offset: nextOffset, total: files.length });
+      return;
     }
 
     // === SCORING ===
