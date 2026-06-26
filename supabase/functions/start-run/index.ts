@@ -139,7 +139,7 @@ serve(async (req) => {
         if (freshRun.status === "stopping") {
           await supabase.from("runs").update({ status: "stopped" }).eq("id", run_id);
         }
-        return jsonResp({ status: "stopped" });
+        return;
       }
 
       const truth = truthMap.get(`${file.file_name}|${file.page_number}`) ?? { count: 0, locations: [] };
