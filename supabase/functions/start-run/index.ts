@@ -34,15 +34,25 @@ serve(async (req) => {
   const lovableApiKey = Deno.env.get("LOVABLE_API_KEY")!;
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
+  let payload: any;
   try {
-    const { run_id, continue_processing, iteration_id, offset, start_next, prompt_text } = await req.json();
-    if (!run_id) throw new Error("run_id is required");
+    payload = await req.json();
+  } catch (e) {
+    return jsonResp({ error: "Invalid JSON" }, 400);
+  }
+  const { run_id, continue_processing, iteration_id, offset, start_next, prompt_text } = payload;
+  if (!run_id) return jsonResp({ error: "run_id required" }, 400);
 
+  // Run the heavy work in the background so the HTTP request returns immediately
+  // and never hits the 150s idle timeout. The function self-invokes for further batches.
+  // @ts-ignore - EdgeRuntime is provided by Supabase Edge runtime
+  EdgeRuntime.waitUntil((async () => {
+    try {
     const { data: run, error: runErr } = await supabase.from("runs").select("*").eq("id", run_id).single();
     if (runErr) throw runErr;
 
     if (!start_next && !continue_processing && ["stopped", "failed", "completed"].includes(run.status)) {
-      return jsonResp({ status: "skipped", reason: `Run is ${run.status}` });
+      return;
     }
 
     const { data: files, error: filesErr } = await supabase
@@ -75,7 +85,7 @@ serve(async (req) => {
       const iterNum = run.current_iteration + 1;
       if (iterNum > run.max_iterations) {
         await supabase.from("runs").update({ status: "completed" }).eq("id", run_id);
-        return jsonResp({ status: "completed", reason: "Max iterations reached" });
+        return;
       }
       const { data: iteration, error: iterErr } = await supabase
         .from("iterations")
@@ -129,7 +139,7 @@ serve(async (req) => {
         if (freshRun.status === "stopping") {
           await supabase.from("runs").update({ status: "stopped" }).eq("id", run_id);
         }
-        return jsonResp({ status: "stopped" });
+        return;
       }
 
       const truth = truthMap.get(`${file.file_name}|${file.page_number}`) ?? { count: 0, locations: [] };
@@ -248,8 +258,6 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
         console.error(`File processing failed (${file.file_name} p${file.page_number}):`, e);
       }
 
-      const delta = predictedCount - truth.count;
-
       const { error: upsertErr } = await supabase.from("iteration_results").upsert(
         {
           iteration_id: currentIterationId,
@@ -257,7 +265,6 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
           page_number: file.page_number,
           predicted_count: predictedCount,
           truth_count: truth.count,
-          delta,
           pass1_relevant: pass1Relevant,
           pass1_confidence: pass1Confidence,
           pass1_keywords: pass1Keywords,
@@ -292,7 +299,7 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
           offset: nextOffset,
         }),
       }).catch((e) => console.error("Self-invocation error:", e));
-      return jsonResp({ status: "processing", offset: nextOffset, total: files.length });
+      return;
     }
 
     // === SCORING ===
@@ -305,7 +312,7 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
     if (allResults.length === 0) {
       await supabase.from("iterations").update({ status: "failed" }).eq("id", currentIterationId);
       await supabase.from("runs").update({ status: "failed" }).eq("id", run_id);
-      return jsonResp({ status: "failed", reason: "No results recorded" });
+      return;
     }
 
     // Primary metric: after-gate exact match rate over (file, page) that reached Pass 2.
@@ -416,19 +423,16 @@ Produce a revised detection prompt that should improve after-gate accuracy. Resp
       }
     }
 
-    return jsonResp({
-      status: "completed",
-      iteration_id: currentIterationId,
-      after_gate_score: afterGateScore,
-      e2e_score: e2eScore,
-    });
-  } catch (e) {
-    console.error("start-run error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
+    return;
+    } catch (e) {
+      console.error("start-run background error:", e);
+      try {
+        await supabase.from("runs").update({ status: "failed" }).eq("id", run_id);
+      } catch (_) {}
+    }
+  })());
+
+  return jsonResp({ status: "accepted", run_id }, 202);
 });
 
 function jsonResp(data: any, status = 200) {
