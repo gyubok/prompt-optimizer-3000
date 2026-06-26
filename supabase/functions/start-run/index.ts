@@ -248,8 +248,6 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
         console.error(`File processing failed (${file.file_name} p${file.page_number}):`, e);
       }
 
-      const delta = predictedCount - truth.count;
-
       const { error: upsertErr } = await supabase.from("iteration_results").upsert(
         {
           iteration_id: currentIterationId,
@@ -257,7 +255,6 @@ Return STRICT JSON ONLY following the schema. Use Gemini-native normalized integ
           page_number: file.page_number,
           predicted_count: predictedCount,
           truth_count: truth.count,
-          delta,
           pass1_relevant: pass1Relevant,
           pass1_confidence: pass1Confidence,
           pass1_keywords: pass1Keywords,
