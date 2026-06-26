@@ -23,6 +23,7 @@ export default function NewRun() {
   const [pass1Threshold, setPass1Threshold] = useState(0.7);
   const [maxIterations, setMaxIterations] = useState(20);
   const [stallThreshold, setStallThreshold] = useState(3);
+  const [floorPlanPrompt, setFloorPlanPrompt] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const { data: datasets } = useQuery({
