@@ -61,6 +61,7 @@ export default function NewRun() {
           pass1_threshold: pass1Threshold,
           max_iterations: maxIterations,
           stall_threshold: stallThreshold,
+          floor_plan_prompt: floorPlanPrompt.trim() || null,
           status: "queued",
         })
         .select()
