@@ -187,6 +187,8 @@ export type Database = {
           gemini_file_cache: Json
           id: string
           iteration_number: number
+          last_progress_at: string | null
+          progress_log: Json
           prompt_diff: string | null
           prompt_text: string
           reasoning_json: Json | null
@@ -204,6 +206,8 @@ export type Database = {
           gemini_file_cache?: Json
           id?: string
           iteration_number: number
+          last_progress_at?: string | null
+          progress_log?: Json
           prompt_diff?: string | null
           prompt_text: string
           reasoning_json?: Json | null
@@ -221,6 +225,8 @@ export type Database = {
           gemini_file_cache?: Json
           id?: string
           iteration_number?: number
+          last_progress_at?: string | null
+          progress_log?: Json
           prompt_diff?: string | null
           prompt_text?: string
           reasoning_json?: Json | null
