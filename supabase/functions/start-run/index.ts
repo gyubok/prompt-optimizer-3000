@@ -423,19 +423,16 @@ Produce a revised detection prompt that should improve after-gate accuracy. Resp
       }
     }
 
-    return jsonResp({
-      status: "completed",
-      iteration_id: currentIterationId,
-      after_gate_score: afterGateScore,
-      e2e_score: e2eScore,
-    });
-  } catch (e) {
-    console.error("start-run error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
+    return;
+    } catch (e) {
+      console.error("start-run background error:", e);
+      try {
+        await supabase.from("runs").update({ status: "failed" }).eq("id", run_id);
+      } catch (_) {}
+    }
+  })());
+
+  return jsonResp({ status: "accepted", run_id }, 202);
 });
 
 function jsonResp(data: any, status = 200) {
